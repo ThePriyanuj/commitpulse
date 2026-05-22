@@ -31,6 +31,7 @@ export async function GET(request: Request) {
       text,
       accent,
       scale,
+      size,
       speed,
       radius,
       font,
@@ -102,6 +103,7 @@ export async function GET(request: Request) {
       hideBackground: hide_background,
       hide_stats: hide_stats,
       lang,
+      size,
     };
 
     const calendar = await fetchGitHubContributions(user, {
