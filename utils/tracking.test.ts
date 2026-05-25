@@ -1,13 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { trackUser } from './tracking';
 
 describe('trackUser', () => {
-  beforeEach(() => {
+  afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  it('uses navigator.sendBeacon when available', () => {
-    const sendBeaconMock = vi.fn();
+  it('uses sendBeacon when available', () => {
+    const sendBeaconMock = vi.fn().mockReturnValue(true);
 
     Object.defineProperty(navigator, 'sendBeacon', {
       value: sendBeaconMock,
@@ -17,7 +18,10 @@ describe('trackUser', () => {
     trackUser('testuser');
 
     expect(sendBeaconMock).toHaveBeenCalledTimes(1);
-    expect(sendBeaconMock).toHaveBeenCalledWith('/api/track-user', expect.any(Blob));
+    expect(sendBeaconMock).toHaveBeenCalledWith(
+      '/api/track-user',
+      expect.any(Blob)
+    );
   });
 
   it('falls back to fetch when sendBeacon is not available', () => {
@@ -27,7 +31,7 @@ describe('trackUser', () => {
     });
 
     const fetchMock = vi.fn().mockResolvedValue({});
-    global.fetch = fetchMock;
+    vi.stubGlobal('fetch', fetchMock);
 
     trackUser('testuser');
 
@@ -35,6 +39,23 @@ describe('trackUser', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'testuser' }),
+      keepalive: true,
     });
+  });
+
+  it('falls back to fetch when sendBeacon returns false', () => {
+    const sendBeaconMock = vi.fn().mockReturnValue(false);
+
+    Object.defineProperty(navigator, 'sendBeacon', {
+      value: sendBeaconMock,
+      configurable: true,
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({});
+    vi.stubGlobal('fetch', fetchMock);
+
+    trackUser('testuser');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

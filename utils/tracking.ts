@@ -1,13 +1,21 @@
 export function trackUser(name: string) {
+  if (typeof navigator === 'undefined' || typeof window === 'undefined') return;
+
   const payload = JSON.stringify({ username: name });
-  // sendBeacon is truly fire-and-forget — it doesn't block navigation
-  if (navigator.sendBeacon) {
-    navigator.sendBeacon('/api/track-user', new Blob([payload], { type: 'application/json' }));
-  } else {
+
+  const beaconQueued = navigator.sendBeacon
+    ? navigator.sendBeacon(
+        '/api/track-user',
+        new Blob([payload], { type: 'application/json' })
+      )
+    : false;
+
+  if (!beaconQueued) {
     fetch('/api/track-user', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
+      keepalive: true,
     }).catch(console.error);
   }
 }
