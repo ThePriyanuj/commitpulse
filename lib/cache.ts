@@ -68,6 +68,11 @@ export class TTLCache<T> {
     this.store.clear();
   }
 
+  size(): number {
+    this.sweep();
+    return this.store.size;
+  }
+
   destroy(): void {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
