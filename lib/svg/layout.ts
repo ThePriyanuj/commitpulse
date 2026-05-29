@@ -35,7 +35,7 @@ export interface TowerData {
   intensityLevel: number; // Quartile level (0 for no commits, 1 to 4 based on contribution intensity)
 }
 
-function computeTowerHeight(
+export function computeTowerHeight(
   count: number,
   scale: 'linear' | 'log',
   shouldShowGhostCity: boolean
@@ -47,7 +47,7 @@ function computeTowerHeight(
     : Math.min(count * LINEAR_SCALE_MULTIPLIER, MAX_LINEAR_HEIGHT);
 }
 
-function computeFaceOpacity(count: number, isGhostCityMode: boolean): FaceOpacity {
+export function computeFaceOpacity(count: number, isGhostCityMode: boolean): FaceOpacity {
   if (isGhostCityMode) {
     return { left: 0, right: 0, top: 0.08 };
   }
