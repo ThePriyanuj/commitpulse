@@ -1109,6 +1109,9 @@ describe('escapeXML', () => {
     const safe = 'Hello World 123!@#%^*()_+-=[]{}|;:,./?`~';
     expect(escapeXML(safe)).toBe(safe);
   });
+  it('escapes script injection characters <script>&" together', () => {
+    expect(escapeXML('<script>&"')).toBe('&lt;script&gt;&amp;&quot;');
+  });
 });
 
 describe('particleCount', () => {
