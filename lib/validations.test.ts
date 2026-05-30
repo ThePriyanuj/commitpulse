@@ -1,6 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { githubParamsSchema, ogParamsSchema, streakParamsSchema } from './validations';
 
+describe('streakParamsSchema — grace fallback behavior', () => {
+  it('accepts "0" as a valid grace value', () => {
+    expect(parse({ grace: '0' }).grace).toBe(0);
+  });
+
+  it('accepts "7" as a valid grace value', () => {
+    expect(parse({ grace: '7' }).grace).toBe(7);
+  });
+
+  it('clamps "8" to 7', () => {
+    expect(parse({ grace: '8' }).grace).toBe(7);
+  });
+
+  it('clamps "-1" to 0', () => {
+    expect(parse({ grace: '-1' }).grace).toBe(0);
+  });
+
+  it('falls back to 1 for non-numeric grace value', () => {
+    expect(parse({ grace: 'abc' }).grace).toBe(1);
+  });
+
+  it('defaults to 1 when grace is omitted', () => {
+    expect(parse({}).grace).toBe(1);
+  });
+});
 describe('githubParamsSchema', () => {
   it('should pass when username is valid', () => {
     const result = githubParamsSchema.safeParse({
@@ -224,6 +249,17 @@ describe('streakParamsSchema', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.user).toBe('octocat');
+    }
+  });
+
+  it('should reject user values longer than 39 characters', () => {
+    const result = streakParamsSchema.safeParse({
+      user: 'a'.repeat(40),
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toContain('cannot exceed 39 characters');
     }
   });
 
@@ -552,16 +588,15 @@ describe('streakParamsSchema — boolean transform fields', () => {
   });
 
   // ── hide_background ────────────────────────────────────────────────────────
-  // Stricter than hide_title/hide_stats — only exact 'true' is accepted,
-  // '1' does NOT enable it.
+  // Same dual-value rule as hide_title/hide_stats: 'true' and '1' are both truthy.
 
   describe('hide_background', () => {
     it('returns true when hide_background="true"', () => {
       expect(parse({ hide_background: 'true' }).hide_background).toBe(true);
     });
 
-    it('returns false when hide_background="1" (only exact "true" accepted)', () => {
-      expect(parse({ hide_background: '1' }).hide_background).toBe(false);
+    it('returns true when hide_background="1" (both "true" and "1" accepted)', () => {
+      expect(parse({ hide_background: '1' }).hide_background).toBe(true);
     });
 
     it('returns false when hide_background="false"', () => {
@@ -666,5 +701,37 @@ describe('streakParamsSchema — accent parameter HEX color validation', () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe('streakParamsSchema — Date Range Boundary Robustness (Variation 1)', () => {
+  it('should process validation safely and fallback when partial or missing year parameters are passed', () => {
+    const partialYearPayload = {
+      user: 'octocat',
+      from: '05-12',
+      to: '05-30',
+    };
+
+    const result = streakParamsSchema.safeParse(partialYearPayload);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.from).toBeDefined();
+      expect(result.data.to).toBeDefined();
+    }
+  });
+
+  it('should pass cleanly and fallback to default ranges when date bounds are completely omitted', () => {
+    const minimalPayload = {
+      user: 'octocat',
+    };
+
+    const result = streakParamsSchema.safeParse(minimalPayload);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.from).toBeUndefined();
+      expect(result.data.to).toBeUndefined();
+    }
   });
 });
