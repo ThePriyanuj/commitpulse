@@ -50,16 +50,16 @@ export async function GET(request: Request) {
     const userData = await fetchGitHubContributions(user, { bypassCache: refresh });
     const calendar = userData.calendar;
     const stats = calculateStreak(calendar, timezone);
-    const headers = refresh
-      ? {
-          'Cache-Control': 'no-store, no-cache, must-revalidate',
-          Pragma: 'no-cache',
-          Expires: '0',
-        }
-      : {
-          // Cache until next UTC midnight; clients can bust with ?refresh=true
-          'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
-        };
+    const headers = new Headers({
+      // Cache until next UTC midnight; clients can bust with ?refresh=true
+      'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+    });
+
+    if (refresh) {
+      headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      headers.set('Pragma', 'no-cache');
+      headers.set('Expires', '0');
+    }
 
     return NextResponse.json(
       {
