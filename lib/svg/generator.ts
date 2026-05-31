@@ -72,7 +72,8 @@ function generateParticles(
   count: number,
   sf: number,
   autoTheme: boolean = false,
-  color: string = ''
+  color: string = '',
+  animate: boolean = true
 ): string {
   let particles = '';
   const numParticles = particleCount(count);
@@ -87,8 +88,14 @@ function generateParticles(
 
     particles += `
       <circle ${fillAttr} cx="${x + offsetX}" cy="${y - height}" r="${1.5 * sf}" opacity="1" pointer-events="none">
+      ${
+        animate
+          ? `
         <animate attributeName="cy" from="${y - height}" to="${y - height - Math.round(20 * sf)}" dur="1.5s" begin="${delay}s" repeatCount="indefinite" />
         <animate attributeName="opacity" from="1" to="0" dur="1.5s" begin="${delay}s" repeatCount="indefinite" />
+      `
+          : ''
+      }
       </circle>
     `;
   }
@@ -108,14 +115,15 @@ function renderHeader(
   safeUser: string,
   stats: StreakStats,
   sf: number,
-  params: BadgeParams
+  params: BadgeParams,
+  safeId: string
 ): string {
   const unit = params.mode === 'loc' ? 'lines of code' : 'total contributions';
   const entity = params.org ? 'Organization' : params.repo ? 'Repository' : 'User';
 
   return `
-  <title>CommitPulse ${entity} Stats for ${safeUser}</title>
-  <desc>
+  <title id="cp-title-${safeId}">CommitPulse ${entity} Stats for ${safeUser}</title>
+  <desc id="cp-desc-${safeId}">
     ${safeUser} has ${stats.totalContributions} ${unit} and a longest streak of ${stats.longestStreak} days.
   </desc>
   ${renderDefs(sf, params)}`;
@@ -246,7 +254,8 @@ function renderTowers(
   accent: string | string[],
   text: string,
   sf: number,
-  isAutoTheme: boolean = false
+  isAutoTheme: boolean = false,
+  animate: boolean = true
 ): string {
   let towers = '';
   const opacityMultipliers = [0.4, 0.6, 0.8, 1.0];
@@ -339,7 +348,7 @@ function renderTowers(
     towers += `
         <g transform="translate(${t.x}, ${t.y})">
           <g class="cp-tower interactive-tower" data-date="${escapeXML(t.date)}" data-count="${t.contributionCount}" data-metric="${escapeXML(metric)}" style="animation-delay: ${delay}s;">
-            ${t.isToday ? '<animate attributeName="opacity" values="1;0.4;1" dur="1.5s" repeatCount="indefinite" />' : ''}
+            ${animate && t.isToday ? '<animate attributeName="opacity" values="1;0.4;1" dur="1.5s" repeatCount="indefinite" />' : ''}
             <title>${escapeXML(t.tooltip)}</title>
             <path d="M0 ${10 - t.h} L0 10 L-16 0 L-16 ${-t.h} Z" ${leftFillAttr} fill-opacity="${leftFaceOpacity}" ${leftStrokeAttr} />
             <path d="M0 ${10 - t.h} L0 10 L16 0 L16 ${-t.h} Z" ${rightFillAttr} fill-opacity="${rightFaceOpacity}" ${rightStrokeAttr} />
@@ -358,7 +367,16 @@ function renderTowers(
         : pColorResolved.startsWith('#')
           ? pColorResolved
           : `#${pColorResolved}`;
-      towers += generateParticles(t.x, t.y, t.h, t.contributionCount, sf, isAutoTheme, pColor);
+      towers += generateParticles(
+        t.x,
+        t.y,
+        t.h,
+        t.contributionCount,
+        sf,
+        isAutoTheme,
+        pColor,
+        animate
+      );
     }
   }
   return towers;
@@ -482,6 +500,7 @@ export function generateSVG(
 ): string {
   if (params.autoTheme) return generateAutoThemeSVG(stats, params, calendar);
 
+  const animate = params.animate ?? true;
   const safeUser = escapeXML(params.user || 'GitHub User');
   const bg = `#${sanitizeHexColor(params.bg, '0d1117')}`;
 
@@ -521,19 +540,21 @@ export function generateSVG(
     computeTowers(calendar, params.scale, stats.todayDate, params.mode),
     sf
   );
-  const towers = renderTowers(towerData, params, accent, text, sf, false);
+  const towers = renderTowers(towerData, params, accent, text, sf, false, animate);
 
   const mainAccent = Array.isArray(accent)
     ? accent[accent.length - 1] || '00ffaa'
     : accent || '00ffaa';
   const mainAccentHex = mainAccent.startsWith('#') ? mainAccent : `#${mainAccent}`;
 
+  const safeId = safeUser.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
+
   return `
-<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 ${W} ${H}" fill="none" role="img">
-  ${renderHeader(safeUser, stats, sf, params)}
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 ${W} ${H}" fill="none" role="img" aria-labelledby="cp-title-${safeId}" aria-describedby="cp-desc-${safeId}">
+  ${renderHeader(safeUser, stats, sf, params, safeId)}
   ${renderStyle(selectedFont, statsFont, googleFontsImport, text, mainAccentHex, sf, bg, params.entrance || 'rise')}
   <rect width="${W}" height="${H}" rx="${radius}" fill="${params.hideBackground ? 'transparent' : bg}" ${borderAttr} />
-  <g transform="translate(0, ${Math.round(20 * sf)})">${towers}</g>
+  <g id="cp-towers" style="transform-origin: center; transform-box: fill-box;" transform="translate(0, ${Math.round(20 * sf)})">${towers}</g>
   ${renderIsometricLabels(calendar, params, text, sf)}
   ${renderFooter(stats, params, labels, safeUser, mainAccentHex, sf)}
 </svg>`;
@@ -564,7 +585,7 @@ function generateAutoThemeSVG(
   const sf = getSizeScale(params.size);
   const radius = sanitizeRadius(params.radius, 8) * sf;
   const labels = getLabels(params.lang);
-
+  const animate = params.animate ?? true;
   const W = Math.round(SVG_WIDTH * sf);
   const H = Math.round(SVG_HEIGHT * sf);
   const towerData = scaleTowerData(
@@ -576,6 +597,8 @@ function generateAutoThemeSVG(
   const s = createScaler(sf);
   const fs = (n: number): number => Math.round(n * sf * 10) / 10;
 
+  const safeId = safeUser.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
+
   return `
 <svg
   xmlns="http://www.w3.org/2000/svg"
@@ -583,8 +606,10 @@ function generateAutoThemeSVG(
   viewBox="0 0 ${W} ${H}"
   fill="none"
   role="img"
+  aria-labelledby="cp-title-${safeId}"
+  aria-describedby="cp-desc-${safeId}"
 >
-  ${renderHeader(safeUser, stats, sf, params)}
+  ${renderHeader(safeUser, stats, sf, params, safeId)}
 
   <style>
 @import url('https://fonts.googleapis.com/css2?family=Fira+Code&amp;family=JetBrains+Mono&amp;family=Roboto&amp;family=Syncopate:wght@400;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap');
@@ -620,7 +645,7 @@ function generateAutoThemeSVG(
   </style>
 
   <rect width="${W}" height="${H}" rx="${radius}" ${params.hideBackground ? 'fill="transparent"' : 'class="cp-bg-fill"'} />
-  <g transform="translate(0, ${s(20)})">
+  <g id="cp-towers" style="transform-origin: center; transform-box: fill-box;" transform="translate(0, ${s(20)})">
     ${towers}
   </g>
   ${renderIsometricLabels(calendar, params, 'var(--cp-text)', sf)}
@@ -631,15 +656,21 @@ ${
     : ''
 }
 
-  <rect
-    x="${s(100)}"
-    y="${s(80)}"
-    width="${s(400)}"
-    height="${s(1)}"
-    class="cp-accent-fill scan-line"
-    fill-opacity="0.3"
-    style="--scan-speed: ${params.speed || '8s'}; --scan-start: ${s(0)}px; --scan-end: ${s(240)}px;"
-  />
+  ${
+    animate
+      ? `
+    <rect
+      x="${s(100)}"
+      y="${s(80)}"
+      width="${s(400)}"
+      height="${s(1)}"
+      class="cp-accent-fill scan-line"
+      fill-opacity="0.3"
+      style="--scan-speed: ${params.speed || '8s'}; --scan-start: ${s(0)}px; --scan-end: ${s(240)}px;"
+    />
+    `
+      : ''
+  }
 </svg>
 `;
 }
@@ -730,6 +761,8 @@ export function generateMonthlySVG(stats: MonthlyStats, params: BadgeParams): st
 
   const deltaColor = stats.deltaAbsolute >= 0 ? accent : negativeColor;
 
+  const safeId = safeUser.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
+
   return `
 <svg
   xmlns="http://www.w3.org/2000/svg"
@@ -738,8 +771,11 @@ export function generateMonthlySVG(stats: MonthlyStats, params: BadgeParams): st
   viewBox="0 0 ${width} ${height}"
   fill="none"
   role="img"
+  aria-labelledby="cp-title-${safeId}"
+  aria-describedby="cp-desc-${safeId}"
 >
-  <title>Monthly Stats for ${safeUser}</title>
+  <title id="cp-title-${safeId}">Monthly Stats for ${safeUser}</title>
+  <desc id="cp-desc-${safeId}">Monthly stats for ${safeUser}: ${stats.currentMonthTotal} ${commitsLabel} vs previous month delta of ${deltaText}.</desc>
   <style>
   @import url('https://fonts.googleapis.com/css2?family=Fira+Code&amp;family=JetBrains+Mono&amp;family=Roboto&amp;family=Syncopate:wght@400;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap');
   ${googleFontsImport}
@@ -913,6 +949,7 @@ export function generateWrappedSVG(
     ? 'class="cp-accent-stroke" stroke-opacity="0.15" stroke-width="1.5"'
     : borderAttr;
 
+  const safeId = safeUser.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
   const filterGlow =
     params.glow !== false
       ? `<filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
@@ -931,8 +968,11 @@ export function generateWrappedSVG(
   viewBox="0 0 420 260"
   fill="none"
   role="img"
+  aria-labelledby="cp-title-${safeId}"
+  aria-describedby="cp-desc-${safeId}"
 >
-  <title>${safeUser}'s GitHub Wrapped ${year}</title>
+  <title id="cp-title-${safeId}">${safeUser}'s GitHub Wrapped ${year}</title>
+  <desc id="cp-desc-${safeId}">GitHub Wrapped stats for ${safeUser} in ${year}: ${stats.totalContributions} total contributions, top language is ${stats.topLanguage || 'Unknown'}, busiest month is ${stats.busiestMonth || 'Unknown'}.</desc>
   <defs>
     ${filterGlow}
   </defs>
@@ -1084,6 +1124,8 @@ function generateAutoThemeMonthlySVG(stats: MonthlyStats, params: BadgeParams): 
             : `0%`;
   }
 
+  const safeId = safeUser.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
+
   return `
 <svg
   xmlns="http://www.w3.org/2000/svg"
@@ -1092,8 +1134,11 @@ function generateAutoThemeMonthlySVG(stats: MonthlyStats, params: BadgeParams): 
   viewBox="0 0 ${width} ${height}"
   fill="none"
   role="img"
+  aria-labelledby="cp-title-${safeId}"
+  aria-describedby="cp-desc-${safeId}"
 >
-  <title>Monthly Stats for ${safeUser}</title>
+  <title id="cp-title-${safeId}">Monthly Stats for ${safeUser}</title>
+  <desc id="cp-desc-${safeId}">Monthly stats for ${safeUser}: ${stats.currentMonthTotal} ${commitsLabel} vs previous month delta of ${deltaText}.</desc>
   <style>
   @import url('https://fonts.googleapis.com/css2?family=Fira+Code&amp;family=JetBrains+Mono&amp;family=Roboto&amp;family=Syncopate:wght@400;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap');
   ${googleFontsImport}
@@ -1662,14 +1707,19 @@ export function generateNotFoundSVG(
       </g>`;
   }
 
+  const safeId = safeName.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
+
   return `<svg
   xmlns="http://www.w3.org/2000/svg"
   width="100%"
   viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}"
   fill="none"
   role="img"
+  aria-labelledby="cp-title-${safeId}"
+  aria-describedby="cp-desc-${safeId}"
 >
-  <title>User not found — ${safeName}</title>
+  <title id="cp-title-${safeId}">User not found — ${safeName}</title>
+  <desc id="cp-desc-${safeId}">The GitHub user ${safeName} was not found or has no contribution data.</desc>
   <defs>
     <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
       <feGaussianBlur stdDeviation="5" result="blur"/>
@@ -1812,12 +1862,14 @@ export function generateVersusSVG(
   const s = createScaler(sf);
   const unit = params.mode === 'loc' ? 'lines of code' : 'total contributions';
 
+  const safeId = `${safeUser1}_vs_${safeUser2}`.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
+
   return `
-<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 ${W} ${H}" fill="none" role="img">
-  <title>CommitPulse Versus Stats: ${safeUser1} vs ${safeUser2}</title>
-  <desc>${safeUser1} has ${stats1.totalContributions} ${unit}. ${safeUser2} has ${stats2.totalContributions} ${unit}.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 ${W} ${H}" fill="none" role="img" aria-labelledby="cp-title-${safeId}" aria-describedby="cp-desc-${safeId}">
+  <title id="cp-title-${safeId}">CommitPulse Versus Stats: ${safeUser1} vs ${safeUser2}</title>
+  <desc id="cp-desc-${safeId}">${safeUser1} has ${stats1.totalContributions} ${unit}. ${safeUser2} has ${stats2.totalContributions} ${unit}.</desc>
   ${renderDefs(sf, params)}
-  ${renderStyle(selectedFont, statsFont, googleFontsImport, text, accent, sf, bg)}
+  ${renderStyle(selectedFont, statsFont, googleFontsImport, text, accent, sf, bg, params.entrance || 'rise')}
   <rect width="${W}" height="${H}" rx="${radius}" fill="${params.hideBackground ? 'transparent' : bg}" />
 
   <g transform="translate(0, 0)">
@@ -1949,10 +2001,12 @@ function generateAutoThemeVersusSVG(
   const fs = (n: number): number => Math.round(n * sf * 10) / 10;
   const unit = params.mode === 'loc' ? 'lines of code' : 'total contributions';
 
+  const safeId = `${safeUser1}_vs_${safeUser2}`.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
+
   return `
-<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 ${W} ${H}" fill="none" role="img">
-  <title>CommitPulse Versus Stats: ${safeUser1} vs ${safeUser2}</title>
-  <desc>${safeUser1} has ${stats1.totalContributions} ${unit}. ${safeUser2} has ${stats2.totalContributions} ${unit}.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 ${W} ${H}" fill="none" role="img" aria-labelledby="cp-title-${safeId}" aria-describedby="cp-desc-${safeId}">
+  <title id="cp-title-${safeId}">CommitPulse Versus Stats: ${safeUser1} vs ${safeUser2}</title>
+  <desc id="cp-desc-${safeId}">${safeUser1} has ${stats1.totalContributions} ${unit}. ${safeUser2} has ${stats2.totalContributions} ${unit}.</desc>
   ${renderDefs(sf, params)}
 
   <style>
@@ -2458,14 +2512,19 @@ export function generateRateLimitSVG(
       </g>`;
   }
 
+  const safeId = 'rate_limit';
+
   return `<svg
   xmlns="http://www.w3.org/2000/svg"
   width="100%"
   viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}"
   fill="none"
   role="img"
+  aria-labelledby="cp-title-${safeId}"
+  aria-describedby="cp-desc-${safeId}"
 >
-  <title>Rate Limit Exceeded</title>
+  <title id="cp-title-${safeId}">Rate Limit Exceeded</title>
+  <desc id="cp-desc-${safeId}">GitHub API rate limit exceeded. Please try again later.</desc>
   <defs>
     <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
       <feGaussianBlur stdDeviation="5" result="blur"/>

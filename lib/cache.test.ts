@@ -403,6 +403,21 @@ describe('TTLCache', () => {
       cache.destroy();
     });
 
+    it('stores and retrieves multidimensional array values', () => {
+      const cache = new TTLCache<number[][]>();
+
+      const matrix = [
+        [1, 2],
+        [3, 4],
+      ];
+
+      cache.set('matrix', matrix, 60_000);
+
+      expect(cache.get('matrix')).toEqual(matrix);
+
+      cache.destroy();
+    });
+
     it('stores and retrieves values using unicode cache keys', () => {
       const cache = new TTLCache<string>();
 
@@ -546,6 +561,23 @@ describe('TTLCache', () => {
       cache.set('b', 'y', 60_000);
       cache.clear();
       expect(cache.size()).toBe(0);
+
+      cache.destroy();
+    });
+    // FIX: New test targeting the NaN boundary for Issue #1399
+    it('resolves NaN TTL to the default standard TTL duration', () => {
+      vi.useFakeTimers();
+      const cache = new TTLCache<string>();
+
+      // Setting with NaN should not throw; it should fallback to the default TTL
+      expect(() => cache.set('nan-key', 'value', NaN)).not.toThrow();
+
+      // The item should be successfully stored
+      expect(cache.get('nan-key')).toBe('value');
+
+      // Advance by a small amount to ensure it didn't instantly expire
+      vi.advanceTimersByTime(1000);
+      expect(cache.get('nan-key')).toBe('value');
 
       cache.destroy();
     });

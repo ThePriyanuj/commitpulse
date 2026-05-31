@@ -501,6 +501,70 @@ describe('calculateStreak', () => {
     expect(resultLeapGap.longestStreak).toBe(1);
   });
 
+  it('handles leap years vs non-leap years Feb 28 to Mar 1 timeline and asserts correct current/longest streaks', () => {
+    const buildCustomCalendar = (
+      daysData: { date: string; count: number }[]
+    ): ContributionCalendar => {
+      const weeks = [];
+      for (let i = 0; i < daysData.length; i += 7) {
+        const slice = daysData.slice(i, i + 7);
+        weeks.push({
+          contributionDays: slice.map((day) => ({
+            contributionCount: day.count,
+            date: day.date,
+          })),
+        });
+      }
+      return {
+        totalContributions: daysData.reduce((sum, d) => sum + d.count, 0),
+        weeks,
+      };
+    };
+
+    // 1. Non-Leap Year (2021): Feb 28 to Mar 1
+    // Calendar doesn't have Feb 29.
+    const nonLeapCalendar = buildCustomCalendar([
+      { date: '2021-02-28', count: 1 },
+      { date: '2021-03-01', count: 1 },
+    ]);
+
+    const resultNonLeap = calculateStreak(nonLeapCalendar, 'UTC', new Date('2021-03-01T12:00:00Z'));
+    expect(resultNonLeap.currentStreak).toBe(2);
+    expect(resultNonLeap.longestStreak).toBe(2);
+
+    // 2. Leap Year (2020) with missed leap day (Feb 29 has 0 commits)
+    const leapCalendarWithGap = buildCustomCalendar([
+      { date: '2020-02-28', count: 1 },
+      { date: '2020-02-29', count: 0 },
+      { date: '2020-03-01', count: 1 },
+    ]);
+
+    const resultLeapGap = calculateStreak(
+      leapCalendarWithGap,
+      'UTC',
+      new Date('2020-03-01T12:00:00Z')
+    );
+    // Since Feb 29 has 0 commits, the streak of consecutive active days is broken.
+    // However, grace period = 1 keeps current streak alive but only for the continuous active days ending today (Mar 1).
+    expect(resultLeapGap.currentStreak).toBe(1);
+    expect(resultLeapGap.longestStreak).toBe(1);
+
+    // 3. Leap Year (2020) with active leap day (Feb 29 has 1 commit)
+    const leapCalendarContinuous = buildCustomCalendar([
+      { date: '2020-02-28', count: 1 },
+      { date: '2020-02-29', count: 1 },
+      { date: '2020-03-01', count: 1 },
+    ]);
+
+    const resultLeapContinuous = calculateStreak(
+      leapCalendarContinuous,
+      'UTC',
+      new Date('2020-03-01T12:00:00Z')
+    );
+    expect(resultLeapContinuous.currentStreak).toBe(3);
+    expect(resultLeapContinuous.longestStreak).toBe(3);
+  });
+
   it('correctly calculates current and longest streaks when commits are made exclusively on Saturdays and Sundays', () => {
     // 2024-01-01 is a Monday.
     // Days in a week: Mon, Tue, Wed, Thu, Fri, Sat, Sun
@@ -737,6 +801,157 @@ describe('calculateStreak', () => {
     expect(result.longestStreak).toBe(1);
     expect(result.totalContributions).toBe(1);
   });
+
+  it('simulates a timeline with commits exclusively on Saturdays and Sundays and verifies streak metrics', () => {
+    // 2024-01-01 is a Monday.
+    // Index: 0 (Mon), 1 (Tue), 2 (Wed), 3 (Thu), 4 (Fri), 5 (Sat), 6 (Sun)
+    // Custom calendar with commits ONLY on Sat and Sun:
+    // Week 1: 0, 0, 0, 0, 0, 1, 1 (Sat Jan 6, Sun Jan 7)
+    // Week 2: 0, 0, 0, 0, 0, 1, 1 (Sat Jan 13, Sun Jan 14)
+    // Week 3: 0, 0, 0, 0, 0, 1, 1 (Sat Jan 20, Sun Jan 21)
+    const calendar = buildCalendar([
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1, // Week 1 (Jan 1 to Jan 7)
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1, // Week 2 (Jan 8 to Jan 14)
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1, // Week 3 (Jan 15 to Jan 21)
+    ]);
+
+    // Scenario A: Evaluate on Sunday, Jan 21, 2024.
+    // Sunday has a commit, so current streak is 2 (Sat Jan 20 & Sun Jan 21).
+    // Longest streak is 2.
+    const resultSunday = calculateStreak(calendar, 'UTC', new Date('2024-01-21T12:00:00Z'));
+    expect(resultSunday.currentStreak).toBe(2);
+    expect(resultSunday.longestStreak).toBe(2);
+    expect(resultSunday.totalContributions).toBe(6);
+
+    // Scenario B: Evaluate on Monday, Jan 22, 2024 (using extended calendar).
+    // We add Monday (index 21) with 0 commits.
+    const extendedCalendar = buildCalendar([
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0, // Monday, Jan 22 (0 commits)
+    ]);
+    // Today (Monday) has 0 commits, yesterday (Sunday) has 1 commit.
+    // Under a grace period of 1, the streak is kept alive.
+    // Current streak should be 2. Longest streak is 2.
+    const resultMonday = calculateStreak(extendedCalendar, 'UTC', new Date('2024-01-22T12:00:00Z'));
+    expect(resultMonday.currentStreak).toBe(2);
+    expect(resultMonday.longestStreak).toBe(2);
+  });
+});
+it('calculates streaks identically when weeks start on Sunday vs Monday formats', () => {
+  const datePattern = [
+    { date: '2026-05-24', count: 1 },
+    { date: '2026-05-25', count: 1 },
+    { date: '2026-05-26', count: 1 },
+    { date: '2026-05-27', count: 1 },
+    { date: '2026-05-28', count: 1 },
+    { date: '2026-05-29', count: 1 },
+    { date: '2026-05-30', count: 1 },
+    { date: '2026-05-31', count: 1 },
+    { date: '2026-06-01', count: 1 },
+    { date: '2026-06-02', count: 1 },
+  ];
+
+  const sundayStartCalendar = {
+    totalContributions: 10,
+    weeks: [
+      {
+        contributionDays: datePattern.slice(0, 7).map((d) => ({
+          contributionCount: d.count,
+          date: d.date,
+        })),
+      },
+      {
+        contributionDays: datePattern.slice(7).map((d) => ({
+          contributionCount: d.count,
+          date: d.date,
+        })),
+      },
+    ],
+  };
+
+  const mondayStartCalendar = {
+    totalContributions: 10,
+    weeks: [
+      {
+        contributionDays: [
+          {
+            contributionCount: datePattern[0].count,
+            date: datePattern[0].date,
+          },
+        ],
+      },
+      {
+        contributionDays: datePattern.slice(1, 8).map((d) => ({
+          contributionCount: d.count,
+          date: d.date,
+        })),
+      },
+      {
+        contributionDays: datePattern.slice(8).map((d) => ({
+          contributionCount: d.count,
+          date: d.date,
+        })),
+      },
+    ],
+  };
+
+  const evalDate = new Date('2026-06-02T12:00:00Z');
+
+  const resultSunday = calculateStreak(
+    sundayStartCalendar as ContributionCalendar,
+    'UTC',
+    evalDate
+  );
+
+  const resultMonday = calculateStreak(
+    mondayStartCalendar as ContributionCalendar,
+    'UTC',
+    evalDate
+  );
+
+  expect(resultSunday.currentStreak).toBe(10);
+  expect(resultSunday.longestStreak).toBe(10);
+
+  expect(resultMonday.currentStreak).toBe(10);
+  expect(resultMonday.longestStreak).toBe(10);
 });
 
 describe('calculateStreak — timezone awareness', () => {
@@ -754,6 +969,41 @@ describe('calculateStreak — timezone awareness', () => {
       },
     ],
   };
+
+  it('verifies streak formulas for timezone shifts around midnight timeline', () => {
+    const calendar = {
+      totalContributions: 2,
+      weeks: [
+        {
+          contributionDays: [
+            { contributionCount: 1, date: '2024-06-14' },
+            { contributionCount: 1, date: '2024-06-15' },
+          ],
+        },
+      ],
+    };
+
+    // Commit timeline:
+    // 2024-06-14 23:59 UTC
+    const beforeMidnight = new Date('2024-06-14T23:59:00.000Z');
+
+    // 2 minutes later
+    // 2024-06-15 00:01 UTC
+    const afterMidnight = new Date('2024-06-15T00:01:00.000Z');
+
+    const resultBefore = calculateStreak(calendar, 'UTC', beforeMidnight);
+
+    const resultAfter = calculateStreak(calendar, 'UTC', afterMidnight);
+
+    expect(resultBefore.currentStreak).toBe(1);
+    expect(resultAfter.currentStreak).toBe(2);
+
+    expect(resultBefore.longestStreak).toBe(2);
+    expect(resultAfter.longestStreak).toBe(2);
+
+    expect(resultBefore.todayDate).toBe('2024-06-14');
+    expect(resultAfter.todayDate).toBe('2024-06-15');
+  });
 
   const nowUTC = new Date('2024-06-16T07:00:00.000Z');
 
@@ -794,6 +1044,53 @@ describe('calculateStreak — timezone awareness', () => {
   it('preserves the streak when the local date (UTC-8) maps to a day with commits via grace period', () => {
     const result = calculateStreak(tzCalendar, 'Etc/GMT+8', nowUTC);
     expect(result.currentStreak).toBe(3);
+  });
+
+  it('handles contributions at 23:59 and 00:01 UTC across timezone boundaries', () => {
+    // Simulate two commits that occur around the UTC midnight boundary:
+    // - One commit at 2024-07-10T23:59:00Z (falls on 2024-07-10 UTC)
+    // - Another commit at 2024-07-11T00:01:00Z (falls on 2024-07-11 UTC)
+    // The flattened calendar only stores dates; these two commits appear on
+    // consecutive dates (2024-07-10 and 2024-07-11). Depending on the
+    // caller's timezone, the local "today" may be either 2024-07-11 or
+    // still 2024-07-10 which can expose off-by-one errors.
+    const calendar = {
+      totalContributions: 2,
+      weeks: [
+        {
+          contributionDays: [
+            { contributionCount: 0, date: '2024-07-09' },
+            { contributionCount: 1, date: '2024-07-10' }, // 23:59 UTC commit
+            { contributionCount: 1, date: '2024-07-11' }, // 00:01 UTC commit
+          ],
+        },
+      ],
+    };
+
+    // Use a UTC moment shortly after the second commit.
+    const nowUTC = new Date('2024-07-11T00:01:00.000Z');
+
+    // In UTC the local date is 2024-07-11 — both days are in scope → streak=2
+    const utcResult = calculateStreak(calendar, 'UTC', nowUTC);
+    expect(utcResult.todayDate).toBe('2024-07-11');
+    expect(utcResult.currentStreak).toBe(2);
+    expect(utcResult.longestStreak).toBe(2);
+
+    // In a timezone ahead of UTC by 1 hour (Etc/GMT-1), local date is also 2024-07-11
+    // and the streak remains 2 (no split occurs).
+    const aheadResult = calculateStreak(calendar, 'Etc/GMT-1', nowUTC);
+    expect(aheadResult.todayDate).toBe('2024-07-11');
+    expect(aheadResult.currentStreak).toBe(2);
+    expect(aheadResult.longestStreak).toBe(2);
+
+    // In a timezone behind UTC by 1 hour (Etc/GMT+1), local date is still 2024-07-10
+    // at the same instant — only the earlier day's commit is considered "today",
+    // so currentStreak should be 1 while longestStreak across the whole calendar
+    // remains 2.
+    const behindResult = calculateStreak(calendar, 'Etc/GMT+1', nowUTC);
+    expect(behindResult.todayDate).toBe('2024-07-10');
+    expect(behindResult.currentStreak).toBe(1);
+    expect(behindResult.longestStreak).toBe(2);
   });
 
   it('falls back to the last available day when the local date is ahead of the calendar data', () => {
