@@ -1320,6 +1320,30 @@ describe('calculateStreak — timezone awareness', () => {
     const result = calculateStreak(tzCalendar, 'UTC', nowUTC);
     expect(result.todayDate).toBe('2024-06-16');
   });
+
+  it('handles timezone boundary alignment between UTC, IST and JST', () => {
+    const calendar = {
+      totalContributions: 2,
+      weeks: [
+        {
+          contributionDays: [
+            { contributionCount: 1, date: '2024-06-14' },
+            { contributionCount: 1, date: '2024-06-15' },
+          ],
+        },
+      ],
+    };
+
+    const now = new Date('2024-06-14T20:00:00Z');
+
+    const utcResult = calculateStreak(calendar, 'UTC', now);
+    const istResult = calculateStreak(calendar, 'Asia/Kolkata', now);
+    const jstResult = calculateStreak(calendar, 'Asia/Tokyo', now);
+
+    expect(utcResult.todayDate).toBe('2024-06-14');
+    expect(istResult.todayDate).toBe('2024-06-15');
+    expect(jstResult.todayDate).toBe('2024-06-15');
+  });
 });
 
 describe('isStreakAlive', () => {
@@ -1681,6 +1705,51 @@ describe('aggregateCalendars', () => {
     expect(result.weeks[0].contributionDays[0].contributionCount).toBe(1); // 1 + 0
     expect(result.weeks[0].contributionDays[1].contributionCount).toBe(3); // 0 + 3
     expect(result.weeks[0].contributionDays[2].contributionCount).toBe(3); // 2 + 1
+  });
+
+  it('preserves dates that exist only in non-base calendars', () => {
+    const cal1 = {
+      totalContributions: 1,
+      weeks: [
+        {
+          contributionDays: [
+            {
+              date: '2024-03-01',
+              contributionCount: 1,
+            },
+          ],
+        },
+        {
+          contributionDays: [
+            {
+              date: '2024-03-08',
+              contributionCount: 0,
+            },
+          ],
+        },
+      ],
+    };
+
+    const cal2 = {
+      totalContributions: 5,
+      weeks: [
+        {
+          contributionDays: [
+            {
+              date: '2024-01-01',
+              contributionCount: 5,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = aggregateCalendars([cal1, cal2]);
+
+    const dates = result.weeks.flatMap((week) => week.contributionDays.map((day) => day.date));
+
+    expect(dates).toContain('2024-01-01');
+    expect(dates).toContain('2024-03-01');
   });
 });
 
