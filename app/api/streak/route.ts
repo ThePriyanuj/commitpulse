@@ -17,7 +17,7 @@ import { getSecondsUntilUTCMidnight, getSecondsUntilMidnightInTimezone } from '@
 import type { BadgeParams, ContributionCalendar } from '@/types';
 import { themes } from '@/lib/svg/themes';
 import { streakParamsSchema } from '@/lib/validations';
-import { sanitizeHexColor } from '@/lib/svg/sanitizer';
+import { sanitizeHexColor, sanitizeRadius } from '@/lib/svg/sanitizer';
 
 const SVG_CSP_HEADER =
   "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://fonts.gstatic.com;";
@@ -478,12 +478,7 @@ function buildErrorResponse(error: unknown, parseResult: ParseResult): NextRespo
     undefined;
   const errAccent = `#${sanitizeHexColor(errAccentRaw, '58a6ff')}`;
   const errText = `#${sanitizeHexColor(parseResult.success ? parseResult.data.text : undefined, 'c9d1d9')}`;
-  const errRadius = parseResult.success
-    ? (() => {
-        const r = Number(parseResult.data.radius);
-        return Number.isFinite(r) ? Math.min(32, Math.max(0, r)) : 8;
-      })()
-    : 8;
+  const errRadius = sanitizeRadius(parseResult.success ? parseResult.data.radius : undefined, 8);
   const errSpeed = (parseResult.success && parseResult.data.speed) || '8s';
 
   if (isRateLimit) {
