@@ -170,19 +170,21 @@ vi.mock('@/hooks/useRecentSearches', () => ({
 describe('LandingPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    // Clear persisted username between tests
+    window.localStorage.clear();
+
     mockRecentSearches.searches = ['octocat', 'torvalds'];
     mockRecentSearches.addSearch = vi.fn();
     mockRecentSearches.clearSearches = vi.fn();
     mockRecentSearches.removeSearch = vi.fn();
 
-    // Mock navigator.clipboard
     Object.assign(navigator, {
       clipboard: {
         writeText: vi.fn().mockResolvedValue(undefined),
       },
     });
 
-    // Mock scrollIntoView
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
   });
 

@@ -8,7 +8,6 @@ import { gsap } from 'gsap';
 import { useGSAP } from '@gsap/react';
 
 import {
-  X,
   Flame,
   Trophy,
   GitCommit,
@@ -19,7 +18,6 @@ import {
   Copy,
   ExternalLink,
 } from 'lucide-react';
-
 
 import { X } from 'lucide-react';
 import useLocalStorage from '@/hooks/useLocalStorage';
@@ -294,7 +292,6 @@ interface UserDetails {
 }
 
 export default function LandingPage() {
-
   const getDisplayUsername = (name: string) => {
     if (name.includes('github.com/')) {
       const parts = name.split('github.com/');
