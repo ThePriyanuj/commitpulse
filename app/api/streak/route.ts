@@ -251,6 +251,13 @@ export async function GET(request: Request) {
         .split(',')
         .map((u) => u.trim())
         .filter(Boolean);
+
+      if (users.length > 2) {
+        throw new Error(
+          'ValidationError: The streak comparison generator strictly accepts a maximum of 2 usernames.'
+        );
+      }
+
       let lastError: unknown = null;
       let hasOfflineFallback = false;
       const fetchedCalendars = await Promise.all(
