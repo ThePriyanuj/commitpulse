@@ -1,5 +1,6 @@
 'use client';
 
+import { fallbackCopyToClipboard } from '@/utils/clipboard';
 import { useCallback, useEffect, useRef, useState, Suspense, type ReactElement } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { validateGitHubUsername } from '@/lib/validations';
@@ -278,30 +279,6 @@ function CustomizePageInner(): ReactElement {
 
   const exportSnippet = getExportSnippet(exportFormat, queryString);
 
-  const fallbackCopyToClipboard = (text: string): boolean => {
-    try {
-      const textArea = document.createElement('textarea');
-
-      textArea.value = text;
-      textArea.style.position = 'fixed';
-      textArea.style.opacity = '0';
-      textArea.style.pointerEvents = 'none';
-
-      document.body.appendChild(textArea);
-
-      textArea.focus();
-      textArea.select();
-
-      const successful = document.execCommand('copy');
-
-      document.body.removeChild(textArea);
-
-      return successful;
-    } catch {
-      return false;
-    }
-  };
-
   const announceCopyStatus = useCallback((message: string): void => {
     setCopyStatusMessage('');
     window.setTimeout(() => {
@@ -314,7 +291,15 @@ function CustomizePageInner(): ReactElement {
 
     try {
       if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(exportSnippet);
+        try {
+          await navigator.clipboard.writeText(exportSnippet);
+        } catch {
+          const copiedSuccessfully = fallbackCopyToClipboard(exportSnippet);
+
+          if (!copiedSuccessfully) {
+            throw new Error('Fallback clipboard copy failed.');
+          }
+        }
       } else {
         const copiedSuccessfully = fallbackCopyToClipboard(exportSnippet);
 
