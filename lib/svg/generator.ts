@@ -894,6 +894,48 @@ ${renderMilestoneBadges(stats, params, sf)}
 `;
 }
 
+/**
+ * Computes the formatted delta text string for the monthly stats badge.
+ * Shared between generateMonthlySVG (static theme) and
+ * generateAutoThemeMonthlySVG (auto theme) to prevent divergence.
+ *
+ * @param stats - Monthly contribution statistics
+ * @param deltaUnit - 'commits' or 'lines' depending on mode
+ * @param deltaFormat - 'percent' | 'absolute' | 'both' from URL params
+ */
+function computeDeltaText(
+  stats: MonthlyStats,
+  deltaUnit: string,
+  deltaFormat: BadgeParams['delta_format']
+): string {
+  if (deltaFormat === 'absolute') {
+    return stats.deltaAbsolute > 0
+      ? `+${stats.deltaAbsolute} ${deltaUnit}`
+      : stats.deltaAbsolute === 0
+        ? `0 ${deltaUnit}`
+        : `${stats.deltaAbsolute} ${deltaUnit}`;
+  }
+
+  if (deltaFormat === 'both') {
+    return stats.deltaPercentage === null
+      ? `N/A (${stats.deltaAbsolute > 0 ? '+' : ''}${stats.deltaAbsolute})`
+      : stats.deltaPercentage > 0
+        ? `+${stats.deltaPercentage}% (+${stats.deltaAbsolute})`
+        : stats.deltaPercentage < 0
+          ? `${stats.deltaPercentage}% (${stats.deltaAbsolute})`
+          : `0% (${stats.deltaAbsolute > 0 ? '+' : ''}${stats.deltaAbsolute})`;
+  }
+
+  // percent (default)
+  return stats.deltaPercentage === null
+    ? 'N/A'
+    : stats.deltaPercentage > 0
+      ? `+${stats.deltaPercentage}%`
+      : stats.deltaPercentage < 0
+        ? `${stats.deltaPercentage}%`
+        : `0%`;
+}
+
 export function generateMonthlySVG(stats: MonthlyStats, params: BadgeParams): string {
   if (params.autoTheme) {
     return generateAutoThemeMonthlySVG(stats, params);
@@ -929,33 +971,7 @@ export function generateMonthlySVG(stats: MonthlyStats, params: BadgeParams): st
     params.mode === 'loc' ? 'LINES THIS MONTH (EST.)' : labels.COMMITS_THIS_MONTH;
   const deltaUnit = params.mode === 'loc' ? 'LINES (EST.)' : 'commits';
 
-  let deltaText = '';
-  if (params.delta_format === 'absolute') {
-    deltaText =
-      stats.deltaAbsolute > 0
-        ? `+${stats.deltaAbsolute} ${deltaUnit}`
-        : stats.deltaAbsolute === 0
-          ? `0 ${deltaUnit}`
-          : `${stats.deltaAbsolute} ${deltaUnit}`;
-  } else if (params.delta_format === 'both') {
-    deltaText =
-      stats.deltaPercentage === null
-        ? `N/A (${stats.deltaAbsolute > 0 ? '+' : ''}${stats.deltaAbsolute})`
-        : stats.deltaPercentage > 0
-          ? `+${stats.deltaPercentage}% (+${stats.deltaAbsolute})`
-          : stats.deltaPercentage < 0
-            ? `${stats.deltaPercentage}% (${stats.deltaAbsolute})`
-            : `0% (${stats.deltaAbsolute > 0 ? '+' : ''}${stats.deltaAbsolute})`;
-  } else {
-    deltaText =
-      stats.deltaPercentage === null
-        ? 'N/A'
-        : stats.deltaPercentage > 0
-          ? `+${stats.deltaPercentage}%`
-          : stats.deltaPercentage < 0
-            ? `${stats.deltaPercentage}%`
-            : `0%`;
-  }
+  const deltaText = computeDeltaText(stats, deltaUnit, params.delta_format);
   // Resolve negative color
   let negativeColor = '#ff4444';
   const cleanBg = sanitizeHexColor(params.bg, '0d1117');
@@ -1308,33 +1324,7 @@ function generateAutoThemeMonthlySVG(stats: MonthlyStats, params: BadgeParams): 
     params.mode === 'loc' ? 'LINES THIS MONTH (EST.)' : labels.COMMITS_THIS_MONTH;
   const deltaUnit = params.mode === 'loc' ? 'LINES (EST.)' : 'commits';
 
-  let deltaText = '';
-  if (params.delta_format === 'absolute') {
-    deltaText =
-      stats.deltaAbsolute > 0
-        ? `+${stats.deltaAbsolute} ${deltaUnit}`
-        : stats.deltaAbsolute === 0
-          ? `0 ${deltaUnit}`
-          : `${stats.deltaAbsolute} ${deltaUnit}`;
-  } else if (params.delta_format === 'both') {
-    deltaText =
-      stats.deltaPercentage === null
-        ? `N/A (${stats.deltaAbsolute > 0 ? '+' : ''}${stats.deltaAbsolute})`
-        : stats.deltaPercentage > 0
-          ? `+${stats.deltaPercentage}% (+${stats.deltaAbsolute})`
-          : stats.deltaPercentage < 0
-            ? `${stats.deltaPercentage}% (${stats.deltaAbsolute})`
-            : `0% (${stats.deltaAbsolute > 0 ? '+' : ''}${stats.deltaAbsolute})`;
-  } else {
-    deltaText =
-      stats.deltaPercentage === null
-        ? 'N/A'
-        : stats.deltaPercentage > 0
-          ? `+${stats.deltaPercentage}%`
-          : stats.deltaPercentage < 0
-            ? `${stats.deltaPercentage}%`
-            : `0%`;
-  }
+  const deltaText = computeDeltaText(stats, deltaUnit, params.delta_format);
 
   const safeId = safeUser.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
 
