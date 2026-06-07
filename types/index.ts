@@ -162,7 +162,19 @@ export interface BadgeParams {
   /** GitHub username of the opponent to compare against. */
   versus?: string;
 
-  /** Number of grace days before a streak resets (handles timezone edge cases). Defaults to 1. */
+  /**
+   * Number of consecutive missed days forgiven before the streak resets to zero.
+   * Controls how lenient streak tracking is for users who occasionally miss a day:
+   * - `grace=0`: strict mode — any single missed day immediately resets the streak
+   * - `grace=1`: default — one missed day is forgiven before the streak breaks
+   * - `grace=2`: lenient — two consecutive missed days are forgiven
+   *
+   * Accepted range: 0–7. Values outside this range are clamped by `toGraceValue()`.
+   *
+   * Note: this parameter is unrelated to timezone handling. Timezone behavior
+   * (aligning "today" with the user's local midnight) is controlled separately
+   * by the `?tz=` URL parameter via `utils/time.ts`.
+   */
   grace?: number;
 
   /** Background fill color as a hex string WITHOUT the leading '#'. Overrides theme default. */
