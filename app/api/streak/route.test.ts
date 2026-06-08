@@ -1789,4 +1789,44 @@ describe('GET /api/streak', () => {
       expect(response.status).toBe(200);
     });
   });
+
+  describe('user parameter maxLength validation (Variation 2)', () => {
+    it('returns 400 when ?user= is "a".repeat(40) — one character over the GitHub username limit', async () => {
+      const response = await GET(makeRequest({ user: 'a'.repeat(40) }));
+
+      expect(response.status).toBe(400);
+    });
+
+    it('returns error body with "cannot exceed 39 characters" for a 40-char username', async () => {
+      const response = await GET(makeRequest({ user: 'a'.repeat(40) }));
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(body.error).toBe('Invalid parameters');
+      expect(JSON.stringify(body)).toContain('cannot exceed 39 characters');
+    });
+
+    it('does not invoke the GitHub API when the username fails maxLength validation', async () => {
+      await GET(makeRequest({ user: 'a'.repeat(40) }));
+
+      expect(fetchGitHubContributions).not.toHaveBeenCalled();
+    });
+
+    it('returns 200 for a valid username exactly at the 39-character boundary', async () => {
+      const response = await GET(makeRequest({ user: 'a'.repeat(39) }));
+
+      expect(response.status).toBe(200);
+    });
+
+    it('surfaces fieldErrors.user containing maxLength message via NextRequest (Variation 2)', async () => {
+      const url = `http://localhost/api/streak?user=${'a'.repeat(40)}`;
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(body.error).toBe('Invalid parameters');
+      expect(body.details.fieldErrors.user[0]).toMatch(/cannot exceed 39 characters/);
+    });
+  });
 });

@@ -659,6 +659,10 @@ describe('TTLCache', () => {
       vi.advanceTimersByTime(1000);
       expect(cache.get('nan-key')).toBe('value');
 
+      // Advance past the default TTL (60s) to verify it eventually expires
+      vi.advanceTimersByTime(59_001);
+      expect(cache.get('nan-key')).toBeNull();
+
       cache.destroy();
     });
 
