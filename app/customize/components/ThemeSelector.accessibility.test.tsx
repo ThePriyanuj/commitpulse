@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
@@ -8,23 +9,23 @@ vi.mock('./ThemeQuickPresets', () => ({
 }));
 
 vi.mock('./SectionLabel', () => ({
-  SectionLabel: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
+  SectionLabel: ({ children }: { children: ReactNode }) => <span>{children}</span>,
 }));
 
 describe('ThemeSelector Accessibility', () => {
-  const defaultProps = {
+  const makeProps = () => ({
     theme: 'neon',
     onThemeChange: vi.fn(),
-  };
+  });
 
   it('renders shuffle button with accessible name', () => {
-    render(<ThemeSelector {...defaultProps} />);
+    render(<ThemeSelector {...makeProps()} />);
 
     expect(screen.getByRole('button', { name: /shuffle/i })).toBeInTheDocument();
   });
 
   it('renders theme selection combobox', () => {
-    render(<ThemeSelector {...defaultProps} />);
+    render(<ThemeSelector {...makeProps()} />);
 
     expect(screen.getByRole('combobox')).toBeInTheDocument();
   });
@@ -32,7 +33,7 @@ describe('ThemeSelector Accessibility', () => {
   it('supports keyboard tab navigation to interactive controls', async () => {
     const user = userEvent.setup();
 
-    render(<ThemeSelector {...defaultProps} />);
+    render(<ThemeSelector {...makeProps()} />);
 
     const shuffleButton = screen.getByRole('button', {
       name: /shuffle/i,
@@ -46,7 +47,7 @@ describe('ThemeSelector Accessibility', () => {
   });
 
   it('renders all theme options for screen reader access', () => {
-    render(<ThemeSelector {...defaultProps} />);
+    render(<ThemeSelector {...makeProps()} />);
 
     const options = screen.getAllByRole('option');
 
@@ -54,7 +55,7 @@ describe('ThemeSelector Accessibility', () => {
   });
 
   it('provides theme preview information', () => {
-    render(<ThemeSelector {...defaultProps} />);
+    render(<ThemeSelector {...makeProps()} />);
 
     expect(screen.getByText(/bg · accent · text/i)).toBeInTheDocument();
   });
