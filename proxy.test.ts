@@ -215,7 +215,7 @@ describe('proxy', () => {
     expect(rateLimit).toHaveBeenCalledWith('127.0.0.1', 60, 60000);
   });
 
-  it('prefers x-forwarded-for over x-real-ip', async () => {
+  it('prefers x-real-ip over x-forwarded-for', async () => {
     vi.mocked(rateLimit).mockResolvedValue({
       success: true,
       limit: 60,
@@ -232,7 +232,7 @@ describe('proxy', () => {
 
     await proxy(request);
 
-    expect(rateLimit).toHaveBeenCalledWith('1.2.3.4', 60, 60000);
+    expect(rateLimit).toHaveBeenCalledWith('9.9.9.9', 60, 60000);
   });
 
   it('handles multiple IPs with whitespace', async () => {
