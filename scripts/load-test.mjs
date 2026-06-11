@@ -1,29 +1,63 @@
-import autocannon from 'autocannon';
+// Native Node.js Load Testing Script (Zero Dependencies)
+// Usage: node scripts/load-test.mjs
 
-const targetUrl = process.env.TARGET_URL || 'http://localhost:3000/api/streak?user=souravjhahind';
+const TARGET_URL = process.env.TARGET_URL || 'http://localhost:3000/api/streak?user=souravjhahind';
+const CONCURRENCY = 50;
+const DURATION_MS = 10000; // 10 seconds
 
-console.log(`Starting load test against ${targetUrl}...`);
+console.log(`Starting native load test against ${TARGET_URL}...`);
+console.log(`Concurrency: ${CONCURRENCY}, Duration: ${DURATION_MS / 1000}s\n`);
 
-const instance = autocannon({
-  url: targetUrl,
-  connections: 50, // default number of concurrent connections
-  pipelining: 1, // default pipelining
-  duration: 10, // run for 10 seconds
-}, (err, result) => {
-  if (err) {
-    console.error('Load test failed:', err);
-    process.exit(1);
+let totalRequests = 0;
+let errors = 0;
+let isRunning = true;
+
+const startTime = Date.now();
+
+// Stop the test after DURATION_MS
+setTimeout(() => {
+  isRunning = false;
+}, DURATION_MS);
+
+async function worker() {
+  while (isRunning) {
+    try {
+      const res = await fetch(TARGET_URL);
+      // Consume the response body to avoid memory leaks
+      await res.arrayBuffer(); 
+      if (!res.ok) {
+        errors++;
+      }
+      totalRequests++;
+    } catch (e) {
+      errors++;
+      totalRequests++;
+    }
   }
-  console.log('\nLoad test complete:');
-  console.log(`- Requests: ${result.requests.total} (Avg: ${result.requests.average}/sec)`);
-  console.log(`- Latency: Avg ${result.latency.average}ms, P99 ${result.latency.p99}ms`);
-  console.log(`- Errors: ${result.errors}`);
-  console.log(`- Timeouts: ${result.timeouts}`);
+}
+
+async function run() {
+  const workers = [];
+  for (let i = 0; i < CONCURRENCY; i++) {
+    workers.push(worker());
+  }
+
+  await Promise.all(workers);
+
+  const durationSec = (Date.now() - startTime) / 1000;
+  const requestsPerSec = (totalRequests / durationSec).toFixed(2);
+
+  console.log('--- Load Test Results ---');
+  console.log(`Total Requests: ${totalRequests}`);
+  console.log(`Requests/sec:   ${requestsPerSec}`);
+  console.log(`Errors:         ${errors}`);
   
-  if (result.errors > 0) {
-    console.error('Test resulted in errors! The endpoint may be failing under load.');
+  if (errors > 0) {
+    console.error('\nTest resulted in errors! The endpoint may be failing under load.');
     process.exit(1);
+  } else {
+    console.log('\nSuccess! Endpoint handled the massive scaling test without errors.');
   }
-});
+}
 
-autocannon.track(instance, { renderProgressBar: true });
+run();

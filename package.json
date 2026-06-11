@@ -13,7 +13,6 @@
     "test": "vitest run",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
-    "test:load": "node scripts/load-test.mjs",
     "bench:svg": "tsx scripts/benchmark-svg.ts",
     "prepare": "husky"
   },
@@ -70,7 +69,6 @@
     "@vitejs/plugin-react": "^6.0.2",
     "@vitest/coverage-v8": "^4.1.4",
     "@vitest/ui": "^4.1.4",
-    "autocannon": "^8.0.0",
     "autoprefixer": "^10.5.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.3",
