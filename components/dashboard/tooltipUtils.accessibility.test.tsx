@@ -14,7 +14,16 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('framer-motion', () => {
   const MockMotionDiv = React.forwardRef<
     HTMLDivElement,
-    React.HTMLAttributes<HTMLDivElement> & Record<string, unknown>
+    React.HTMLAttributes<HTMLDivElement> & {
+      initial?: unknown;
+      animate?: unknown;
+      exit?: unknown;
+      transition?: unknown;
+      whileHover?: unknown;
+      whileTap?: unknown;
+      variants?: unknown;
+      children?: React.ReactNode;
+    }
   >(function MockMotionDiv(
     { children, initial, animate, exit, transition, whileHover, whileTap, variants, ...domProps },
     ref
@@ -26,13 +35,16 @@ vi.mock('framer-motion', () => {
     void whileHover;
     void whileTap;
     void variants;
-    return React.createElement('div', { ...domProps, ref }, children);
+    return (
+      <div {...domProps} ref={ref}>
+        {children}
+      </div>
+    );
   });
 
   return {
     motion: { div: MockMotionDiv },
-    AnimatePresence: ({ children }: { children: React.ReactNode }) =>
-      React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   };
 });
 
@@ -45,11 +57,9 @@ import VisualizationTooltip from './VisualizationTooltip';
 describe('VisualizationTooltip – role attribute compliance', () => {
   it('renders with role="tooltip" so assistive technologies correctly identify the element', () => {
     render(
-      React.createElement(
-        VisualizationTooltip,
-        { title: 'Test Title', x: 100, y: 200 },
-        React.createElement('span', null, 'Content')
-      )
+      <VisualizationTooltip title="Test Title" x={100} y={200}>
+        <span>Content</span>
+      </VisualizationTooltip>
     );
 
     const tooltip = screen.getByRole('tooltip');
@@ -64,11 +74,9 @@ describe('VisualizationTooltip – role attribute compliance', () => {
 describe('VisualizationTooltip – accessible title announcement', () => {
   it('renders the title prop as visible text that screen readers can announce', () => {
     render(
-      React.createElement(
-        VisualizationTooltip,
-        { title: 'Commits: 42', x: 100, y: 200 },
-        React.createElement('span', null, 'Detail content')
-      )
+      <VisualizationTooltip title="Commits: 42" x={100} y={200}>
+        <span>Detail content</span>
+      </VisualizationTooltip>
     );
 
     const tooltip = screen.getByRole('tooltip');
@@ -83,11 +91,9 @@ describe('VisualizationTooltip – accessible title announcement', () => {
 describe('VisualizationTooltip – descriptive children content', () => {
   it('renders children inside the tooltip so screen readers announce the full description', () => {
     render(
-      React.createElement(
-        VisualizationTooltip,
-        { title: 'Activity', x: 50, y: 80 },
-        React.createElement('span', null, 'Monday: 5 commits')
-      )
+      <VisualizationTooltip title="Activity" x={50} y={80}>
+        <span>Monday: 5 commits</span>
+      </VisualizationTooltip>
     );
 
     const tooltip = screen.getByRole('tooltip');
@@ -102,11 +108,9 @@ describe('VisualizationTooltip – descriptive children content', () => {
 describe('VisualizationTooltip – non-empty accessible label', () => {
   it('produces non-empty text content so aria-label is always populated for screen readers', () => {
     render(
-      React.createElement(
-        VisualizationTooltip,
-        { title: 'Peak Day', x: 0, y: 0 },
-        React.createElement('span', null, '12 contributions')
-      )
+      <VisualizationTooltip title="Peak Day" x={0} y={0}>
+        <span>12 contributions</span>
+      </VisualizationTooltip>
     );
 
     const tooltip = screen.getByRole('tooltip');
@@ -130,11 +134,9 @@ describe('VisualizationTooltip – position-independent accessible content', () 
 
     for (const pos of positions) {
       const { unmount } = render(
-        React.createElement(
-          VisualizationTooltip,
-          { title: 'Language: TypeScript', x: pos.x, y: pos.y },
-          React.createElement('span', null, '68% of codebase')
-        )
+        <VisualizationTooltip title="Language: TypeScript" x={pos.x} y={pos.y}>
+          <span>68% of codebase</span>
+        </VisualizationTooltip>
       );
 
       const tooltip = screen.getByRole('tooltip');
