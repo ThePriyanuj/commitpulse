@@ -3,7 +3,12 @@
 import crypto from 'crypto';
 import { NextResponse } from 'next/server';
 import { fetchGitHubContributions, getOrgDashboardData } from '@/lib/github';
-import { calculateStreak, calculateMonthlyStats, aggregateCalendars } from '@/lib/calculate';
+import {
+  calculateStreak,
+  calculateMonthlyStats,
+  aggregateCalendars,
+  chunkDaysIntoWeeks,
+} from '@/lib/calculate';
 import {
   generateNotFoundSVG,
   generateRateLimitSVG,
@@ -367,11 +372,7 @@ export async function GET(request: Request) {
 
       calendar = {
         totalContributions: filteredDays.reduce((sum, d) => sum + d.contributionCount, 0),
-        weeks: [
-          {
-            contributionDays: filteredDays,
-          },
-        ],
+        weeks: chunkDaysIntoWeeks(filteredDays),
       };
     }
 

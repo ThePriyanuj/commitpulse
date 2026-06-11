@@ -126,6 +126,19 @@ describe('GET /api/streak', () => {
       expect(response.status).toBe(400);
     });
 
+    it('re-chunks ?days filtered days into real weeks instead of one overflowing week', async () => {
+      const response = await GET(makeRequest({ user: 'octocat', days: '10', format: 'json' }));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      const weeks = body.calendar.weeks as { contributionDays: unknown[] }[];
+
+      // Before the fix all filtered days were crammed into a single week.
+      expect(weeks.length).toBeGreaterThan(1);
+      // No week exceeds 7 days, so isometric towers do not collapse and heatmap cells
+      // do not overflow the canvas below row 6.
+      expect(weeks.every((w) => w.contributionDays.length <= 7)).toBe(true);
+    });
+
     it('returns 400 Bad Request when ?layout= is set to an unsupported format', async () => {
       const response = await GET(makeRequest({ user: 'octocat', layout: 'unsupported_layout' }));
       expect(response.status).toBe(400);
