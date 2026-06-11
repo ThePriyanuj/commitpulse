@@ -104,6 +104,15 @@ const timeZoneParam = z
 
 export const GITHUB_USERNAME_REGEX = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9]))*$/;
 
+export const githubUsernameSchema = z
+  .string({ error: 'Invalid GitHub username' })
+  .trim()
+  .min(1, { message: 'Invalid GitHub username' })
+  .max(39, { message: 'Invalid GitHub username' })
+  .regex(GITHUB_USERNAME_REGEX, {
+    message: 'Invalid GitHub username',
+  });
+
 const baseStreakParamsSchema = z.object({
   // Required — missing user surfaces as "Missing" to match existing tests
   user: z

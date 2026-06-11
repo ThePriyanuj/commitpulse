@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   githubParamsSchema,
+  githubUsernameSchema,
   ogParamsSchema,
   streakParamsSchema,
   toGraceValue,
@@ -1653,5 +1654,27 @@ describe('streakParamsSchema — user maxLength boundary (Variation 2)', () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+describe('githubUsernameSchema regression tests', () => {
+  const validUsernames = ['octocat', 'KRUSHAL2956', 'my-user', 'user123'];
+  const invalidUsernames = ['!!!!!!!!', '--------', 'abc--', '--abc', '<script>', 'user--name'];
+
+  it('passes validation for valid GitHub usernames', () => {
+    for (const username of validUsernames) {
+      const result = githubUsernameSchema.safeParse(username);
+      expect(result.success, `Expected "${username}" to be valid`).toBe(true);
+    }
+  });
+
+  it('fails validation for invalid GitHub usernames', () => {
+    for (const username of invalidUsernames) {
+      const result = githubUsernameSchema.safeParse(username);
+      expect(result.success, `Expected "${username}" to be invalid`).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toBe('Invalid GitHub username');
+      }
+    }
   });
 });
