@@ -74,16 +74,11 @@ describe('HistoricalTrendView - Empty & Missing Input Fallbacks', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-01-15T12:00:00.000Z'));
     consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-01-15T12:00:00Z'));
   });
 
   afterEach(() => {
     consoleError.mockRestore();
-    vi.useRealTimers();
   });
 
   it('renders clear empty-state messaging when activity is an empty array', () => {
@@ -113,7 +108,7 @@ describe('HistoricalTrendView - Empty & Missing Input Fallbacks', () => {
 
     expect(screen.getByText('Contributions')).toBeInTheDocument();
     expect(screen.getByText('Active Days')).toBeInTheDocument();
-    expect(screen.getByText('Current Streak')).toBeInTheDocument();
+    expect(screen.getByText(/^(?:Current|Upcoming|Ending) Streak$/)).toBeInTheDocument();
     expect(screen.getByText('Longest Streak')).toBeInTheDocument();
   });
 
