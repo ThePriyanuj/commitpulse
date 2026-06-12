@@ -1971,7 +1971,8 @@ export function generateNotFoundSVG(
   radius: number,
   speed: string = '8s'
 ): string {
-  const safeName = escapeXML(username.toUpperCase());
+  const sanitizedUsername = username.replace(/[^a-zA-Z0-9\-]/g, '').slice(0, 39) || 'unknown';
+  const safeName = escapeXML(sanitizedUsername.toUpperCase());
   const ghostTowersHtml = renderGhostTowers(GHOST_LAYOUT, accent);
 
   const safeId = safeName.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
