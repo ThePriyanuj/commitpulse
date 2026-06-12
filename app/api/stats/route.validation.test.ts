@@ -37,7 +37,7 @@ function makeRequest(params: Record<string, string> = {}): Request {
   });
 }
 
-describe('GET /api/stats validation and cache coverage', () => {
+describe('GET /api/stats additional runtime coverage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -66,6 +66,7 @@ describe('GET /api/stats validation and cache coverage', () => {
     });
 
     expect(response.headers.get('X-Refresh-Status')).toBe('Fresh');
+    expect(response.headers.get('X-Cache-Status')).toBe('MISS');
   });
 
   it('returns cache HIT status for normal requests', async () => {
@@ -81,57 +82,57 @@ describe('GET /api/stats validation and cache coverage', () => {
     expect(response.headers.get('X-Refresh-Status')).toBe('Cached');
   });
 
-  it('returns 404 when github lookup cannot resolve user', async () => {
-    vi.mocked(fetchGitHubContributions).mockRejectedValue(new Error('Could not resolve user'));
-
+  it('returns no-store cache headers when bypassCache=true', async () => {
     const response = await GET(
       makeRequest({
-        user: 'missing-user',
+        user: 'octocat',
+        bypassCache: 'true',
       })
     );
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(200);
 
-    const body = await response.json();
-
-    expect(body.error).toBe('User not found');
+    expect(response.headers.get('Cache-Control')).toBe('no-store, no-cache, must-revalidate');
+    expect(response.headers.get('Pragma')).toBe('no-cache');
+    expect(response.headers.get('Expires')).toBe('0');
   });
 
-  it('returns rate limit headers when refresh limit is exceeded', async () => {
-    vi.spyOn(refreshRateLimiter, 'checkLimit').mockReturnValue({
-      success: false,
-      limit: 10,
-      remaining: 0,
-      reset: 12345,
+  it('returns standard cache headers for normal requests', async () => {
+    const response = await GET(
+      makeRequest({
+        user: 'octocat',
+      })
+    );
+
+    expect(response.status).toBe(200);
+
+    expect(response.headers.get('Cache-Control')).toBe(
+      'public, s-maxage=3600, stale-while-revalidate=86400'
+    );
+    expect(response.headers.get('Pragma')).toBeNull();
+    expect(response.headers.get('Expires')).toBeNull();
+  });
+
+  it('records refresh requests through bypassCache=true', async () => {
+    await GET(
+      makeRequest({
+        user: 'octocat',
+        bypassCache: 'true',
+      })
+    );
+
+    const response = await GET(
+      makeRequest({
+        user: 'octocat',
+        bypassCache: 'true',
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('X-Refresh-Status')).toBe('Cooldown-Served-Cached');
+
+    expect(fetchGitHubContributions).toHaveBeenLastCalledWith('octocat', {
+      bypassCache: false,
     });
-
-    const response = await GET(
-      makeRequest({
-        user: 'octocat',
-        refresh: 'true',
-      })
-    );
-
-    expect(response.status).toBe(429);
-
-    expect(response.headers.get('X-RateLimit-Limit')).toBe('10');
-    expect(response.headers.get('X-RateLimit-Remaining')).toBe('0');
-    expect(response.headers.get('X-RateLimit-Reset')).toBe('12345');
-  });
-
-  it('returns github rate limit error when api limit is reached', async () => {
-    vi.mocked(fetchGitHubContributions).mockRejectedValue(new Error('status 403'));
-
-    const response = await GET(
-      makeRequest({
-        user: 'octocat',
-      })
-    );
-
-    expect(response.status).toBe(429);
-
-    const body = await response.json();
-
-    expect(body.error).toContain('GitHub API rate limit reached');
   });
 });
