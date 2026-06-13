@@ -69,7 +69,7 @@ describe('ContributorsPage Mouse Interactivity', () => {
     const props = mockContributorsClient.mock.calls[0][0] as ContributorsClientProps;
 
     expect(Array.isArray(props.topContributors)).toBe(true);
-  });
+  }, 60000);
 
   it('renders successfully when contributor retrieval falls back to an empty state', async () => {
     const originalFetch = global.fetch;

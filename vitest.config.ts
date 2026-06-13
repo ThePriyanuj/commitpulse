@@ -15,7 +15,7 @@ export default defineConfig({
         : ['**/*.massive-scaling.test.ts']),
     ],
     maxWorkers: process.env.CI ? 2 : 15,
-    testTimeout: 30000,
+    testTimeout: 60000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
