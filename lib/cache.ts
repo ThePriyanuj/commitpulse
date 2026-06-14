@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { brotliCompressSync, brotliDecompressSync } from 'zlib';
 
 /**
  * Represents a cached item with its expiration timestamp.
@@ -7,7 +8,6 @@ type CacheItem<T> = {
   value: T;
   expiresAt: number;
 };
-
 /**
  * A Simple in-memory TTL(Time To Live) cache.
  *
@@ -17,16 +17,21 @@ type CacheItem<T> = {
  * @typeParam T - Type of values stored in the cache.
  */
 export class TTLCache<T> {
-  private store = new Map<string, CacheItem<T>>();
+  //private store = new Map<string, CacheItem<T>>();
+
+  private store = new Map<string, CacheItem<T | Buffer>>();
+
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private readonly maxSize?: number;
-
   private static assertValidKey(key: unknown): asserts key is string {
     if (typeof key !== 'string') {
       throw new TypeError('Cache key must be a string');
     }
-  }
 
+    if (key.trim().length === 0) {
+      throw new TypeError('Cache key cannot be empty');
+    }
+  }
   /**
    * Creates a new TTL cache instance.
    *
@@ -58,6 +63,44 @@ export class TTLCache<T> {
     }
   }
 
+  private compress(value: T): T | Buffer {
+    if (typeof value === 'string') {
+      if (value.length > 1024) {
+        try {
+          return brotliCompressSync(Buffer.from(value));
+        } catch {
+          return value;
+        }
+      }
+    } else if (value && typeof value === 'object') {
+      try {
+        const str = JSON.stringify(value);
+        if (str.length > 1024) {
+          return brotliCompressSync(Buffer.from(str));
+        }
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+
+  private decompress(stored: T | Buffer): T {
+    if (Buffer.isBuffer(stored)) {
+      try {
+        const decompressed = brotliDecompressSync(stored).toString();
+        try {
+          return JSON.parse(decompressed) as T;
+        } catch {
+          return decompressed as unknown as T;
+        }
+      } catch {
+        return stored as unknown as T;
+      }
+    }
+    return stored;
+  }
+
   /**
    * Retrieves a value from the cache.
    *
@@ -70,7 +113,14 @@ export class TTLCache<T> {
    * const user = cache.get("user:1");
    */
   get(key: string): T | null {
-    TTLCache.assertValidKey(key);
+    //TTLCache.assertValidKey(key);
+    if (key === null || key === undefined) {
+      throw new TypeError('Cache key must be a string');
+    }
+
+    if (typeof key !== 'string') {
+      throw new TypeError('Cache key must be a string');
+    }
 
     const hit = this.store.get(key);
     if (!hit) return null;
@@ -80,7 +130,7 @@ export class TTLCache<T> {
       return null;
     }
 
-    return hit.value;
+    return this.decompress(hit.value);
   }
 
   /**
@@ -97,7 +147,14 @@ export class TTLCache<T> {
    * }
    */
   has(key: string): boolean {
-    TTLCache.assertValidKey(key);
+    //TTLCache.assertValidKey(key);
+    if (key === null || key === undefined) {
+      throw new TypeError('Cache key must be a string');
+    }
+
+    if (typeof key !== 'string') {
+      throw new TypeError('Cache key must be a string');
+    }
 
     const hit = this.store.get(key);
     if (!hit) return false;
@@ -159,13 +216,16 @@ export class TTLCache<T> {
       return false;
     }
 
-    hit.value = value;
+    hit.value = this.compress(value);
     return true;
   }
 
   set(key: string, value: T, ttlMs: number): void {
-    TTLCache.assertValidKey(key);
-    if (key === '') throw new Error('Cache key cannot be empty');
+    //TTLCache.assertValidKey(key);
+    if (typeof key !== 'string' || key.trim().length === 0) {
+      throw new TypeError('Cache key cannot be empty');
+    }
+
     if (ttlMs <= 0) throw new RangeError(`ttlMs must be positive, got ${ttlMs}`);
     if (Number.isNaN(ttlMs)) ttlMs = 60_000;
 
@@ -185,7 +245,7 @@ export class TTLCache<T> {
     }
 
     this.store.delete(key);
-    this.store.set(key, { value, expiresAt: Date.now() + ttlMs });
+    this.store.set(key, { value: this.compress(value), expiresAt: Date.now() + ttlMs });
   }
 
   /**

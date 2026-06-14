@@ -155,6 +155,25 @@ describe('POST /api/track-user', () => {
       const data = await response.json();
       expect(data.success).toBe(false);
     });
+
+    it('sanitizes and rejects nested MongoDB operators in username field', async () => {
+      const response = await POST(makeRequest({ username: { $ne: 'octocat' } }));
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.error).toBe('Invalid or missing username');
+    });
+
+    it('sanitizes query injection fields from root payload', async () => {
+      process.env.MONGODB_URI = 'mongodb://localhost:27017/test';
+      const response = await POST(makeRequest({ username: 'valid-user', $where: 'javascript' }));
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.success).toBe(true);
+      expect(User.updateOne).toHaveBeenCalledWith({ username: 'valid-user' }, expect.any(Object), {
+        upsert: true,
+      });
+    });
   });
 
   it('returns 429 with rate limit headers when rate limited', async () => {
@@ -174,6 +193,12 @@ describe('POST /api/track-user', () => {
     expect(response.headers.get('x-ratelimit-limit')).toBe('5');
     expect(response.headers.get('x-ratelimit-remaining')).toBe('0');
     expect(response.headers.get('x-ratelimit-reset')).toBe(reset.toString());
+  });
+
+  it('applies rate limiting to localhost requests', async () => {
+    await POST(makeRequest({ username: 'valid-user' }));
+
+    expect(trackUserRateLimiter.checkWithResult).toHaveBeenCalledWith('127.0.0.1');
   });
 
   describe('Without MONGODB_URI (Local Development Bypass)', () => {
@@ -226,18 +251,22 @@ describe('POST /api/track-user', () => {
       expect(data.bypassed).toBeUndefined();
     });
 
-    it('returns 500 when database connection fails', async () => {
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    it('bypasses user tracking gracefully when database connection fails', async () => {
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       vi.mocked(dbConnect).mockRejectedValueOnce(new Error('DB Down'));
 
       const response = await POST(makeRequest({ username: 'octocat' }));
 
-      expect(response.status).toBe(500);
+      expect(response.status).toBe(200);
       const data = await response.json();
-      expect(data.success).toBe(false);
-      expect(data.error).toBe('Internal server error');
+      expect(data.success).toBe(true);
 
-      consoleErrorSpy.mockRestore();
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        'Database operation failed or timed out. Bypassing user tracking:',
+        expect.any(Error)
+      );
+
+      consoleWarnSpy.mockRestore();
     });
   });
 
