@@ -260,7 +260,7 @@ describe('GET /api/wrapped', () => {
       const response = await GET(makeRequest({ user: 'octocat', refresh: 'true' }));
       expect(response.status).toBe(429);
       const body = await response.text();
-      expect(body).toContain('RATE LIMITED');
+      expect(body).toContain('API RATE LIMIT');
     });
 
     it('returns 429 when IP refresh limit is exceeded', async () => {
