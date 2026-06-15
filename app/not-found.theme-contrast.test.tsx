@@ -100,7 +100,7 @@ describe('NotFound Theme Contrast & Visual Cohesion', () => {
     expect(main).toBeInTheDocument();
     expect(main?.className).toContain('text-white');
     expect(main?.className).toContain('min-h-screen');
-    expect(main?.className).toContain('overflow-hidden');
+    expect(main?.className).toContain('overflow-x-hidden');
 
     expect(screen.getByText('Go back home')).toHaveClass('text-white/60');
   });
