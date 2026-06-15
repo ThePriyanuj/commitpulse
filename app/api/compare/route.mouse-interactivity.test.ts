@@ -46,14 +46,14 @@ describe('ApiCompareRoute Tests', () => {
       1,
       'octocat',
       expect.objectContaining({
-        token: expect.anything(),
+        token: undefined,
       })
     );
     expect(getFullDashboardData).toHaveBeenNthCalledWith(
       2,
       'defunkt',
       expect.objectContaining({
-        token: expect.anything(),
+        token: undefined,
       })
     );
   });

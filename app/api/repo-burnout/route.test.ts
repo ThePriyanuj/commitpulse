@@ -125,6 +125,10 @@ describe('GET /api/repo-burnout', () => {
       })
     );
   });
+  expect(fetchBurnoutAnalysis).toHaveBeenCalledWith('octocat', 'hello-world', {
+    bypassCache: false,
+    token: undefined,
+  });
 
   it('returns 429 when GitHub API quota is low and bypassCache is requested', async () => {
     quotaMonitor.setQuota(5000, 400, Date.now() + 60000); // 8% remaining

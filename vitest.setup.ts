@@ -2,6 +2,11 @@ import '@testing-library/jest-dom';
 import { afterEach } from 'vitest';
 import { vi } from 'vitest';
 
+// 1. Next-Auth ko crash hone se bachane ke liye env variables defaults set karo
+process.env.AUTH_SECRET = 'a-super-secret-32-character-dummy-string-for-tests';
+process.env.NEXTAUTH_SECRET = 'a-super-secret-32-character-dummy-string-for-tests';
+process.env.GITHUB_TOKEN = 'mock-github-token-for-testing';
+
 // Next.js ke dynamic headers context ko mock karo taaki tests crash na hon
 vi.mock('next/headers', () => {
   const mockHeaders = new Headers({
