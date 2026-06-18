@@ -819,10 +819,12 @@ describe('forceRefresh write-back', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('fetchGitHubContributions: forceRefresh writes back so a later normal read is a cache hit', async () => {
-    vi.mocked(fetch).mockResolvedValue(
-      mockResponse({
-        data: { user: { contributionsCollection: { contributionCalendar: mockCalendar } } },
-      })
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(
+        mockResponse({
+          data: { user: { contributionsCollection: { contributionCalendar: mockCalendar } } },
+        })
+      )
     );
 
     await fetchGitHubContributions('octocat', { forceRefresh: true });

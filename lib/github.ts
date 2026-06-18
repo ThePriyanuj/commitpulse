@@ -752,7 +752,11 @@ export async function fetchGitHubContributions(
 
   if (options.bypassCache || options.forceRefresh) {
     try {
-      return await coalescedLoad();
+      const result = await coalescedLoad();
+      if (options.forceRefresh) {
+        await contributionsCache.set(key, result, LONG_CACHE_TTL);
+      }
+      return result;
     } catch (err: unknown) {
       const staleData = await contributionsCache.get(key);
       if (staleData) {
@@ -903,20 +907,6 @@ async function fetchContributionsUncached(
 
   calendar.lastSyncedAt = new Date().toISOString();
 
-  const LONG_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
-  if (!options.bypassCache) {
-    await contributionsCache.set(
-      key,
-      {
-        calendar,
-        repoContributions,
-        totalPRs,
-        totalIssues,
-        totalReviews,
-      },
-      LONG_CACHE_TTL
-    );
-  }
   // 1. Fabricate the LOC additions and deletions fields with strict lint-compliant object mappings
   const processedWeeks = (calendar.weeks || []).map((week: unknown) => {
     const rawWeek = week as unknown as Record<string, unknown>;
