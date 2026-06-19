@@ -251,6 +251,10 @@ export async function rateLimit(
   limit: number = 60,
   windowMs: number = 60000
 ): Promise<RateLimitResult> {
+  if (!ip || ip.trim().length === 0) {
+    throw new TypeError('Cache key cannot be empty');
+  }
+
   const now = Date.now();
   const url = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
