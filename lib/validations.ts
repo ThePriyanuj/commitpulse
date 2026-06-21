@@ -793,12 +793,12 @@ export const resumeConfirmDataSchema = z.object({
   name: z
     .string()
     .trim()
-    .min(1, { message: 'Name and email are required' })
+    .min(2, { message: 'Name must be at least 2 characters' })
     .max(100, { message: 'Name must be at most 100 characters' }),
   email: z
     .string()
     .trim()
-    .min(1, { message: 'Name and email are required' })
+    .min(1, { message: 'A valid email address is required' })
     .max(254, { message: 'Email must be at most 254 characters' })
     .email({ message: 'Invalid email address' }),
   phone: z.string().trim().max(40, { message: 'Phone must be at most 40 characters' }).default(''),
