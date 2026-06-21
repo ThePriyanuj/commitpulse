@@ -57,6 +57,9 @@ vi.mock('lucide-react', async (importOriginal) => {
     RefreshCw: () => <span>Refresh</span>,
     Share2: () => <span>Share</span>,
     Network: () => <span>Network</span>,
+    Target: () => <span>Target</span>,
+    Edit2: () => <span>Edit2</span>,
+    Check: () => <span>Check</span>,
   };
 });
 
