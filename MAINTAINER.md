@@ -15,5 +15,5 @@ Thank you to the maintainers of **CommitPulse** for leading the project, reviewi
 
 If you have questions, feedback, or need help with code contributions:
 
-- Join the conversation on the [CommitPulse Discord Server](https://discord.gg/Cb73bS79j) 💬
+- Join the conversation on the [CommitPulse Discord Server](https://discord.gg/f84SDraEBH) 💬
 - Open a GitHub issue or participate in discussions.
