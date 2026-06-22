@@ -375,15 +375,15 @@ function CompareProfileCard({ user, side }: { user: CompareUserData; side: 'left
         {/* Avatar */}
         <div className="relative mb-4">
           <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-black/10 dark:border-[rgba(255,255,255,0.12)]">
-            <Image
+            <img
               src={
                 profile.avatarUrl.startsWith('http')
                   ? `${profile.avatarUrl}${profile.avatarUrl.includes('?') ? '&' : '?'}s=120`
                   : profile.avatarUrl
               }
               alt={profile.name}
-              width={80}
-              height={80}
+              width="80"
+              height="80"
               className="w-full h-full object-cover"
             />
           </div>
@@ -1489,15 +1489,14 @@ export default function CompareClient() {
                               @{user.profile.username}
                             </span>
                           </div>
-                          <Image
+                          <img
                             data-monolith-img="true"
                             key={`${user.profile.username}-${monolithKey}`}
                             src={`/api/streak?user=${encodeURIComponent(user.profile.username)}&theme=neon&entrance=none&_k=${monolithKey}`}
                             alt={`${user.profile.username}'s CommitPulse monolith`}
-                            width={300}
-                            height={400}
+                            width="300"
+                            height="400"
                             className="w-full h-auto"
-                            unoptimized
                           />
                         </motion.div>
                       ))}
