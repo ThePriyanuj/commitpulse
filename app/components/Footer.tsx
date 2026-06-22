@@ -140,7 +140,7 @@ export function Footer() {
     },
     {
       label: t('footer.discord'),
-      href: 'https://discord.gg/Cb73bS79j',
+      href: 'https://discord.gg/f84SDraEBH',
       ariaLabel: 'Join CommitPulse on Discord',
       icon: 'discord',
     },
