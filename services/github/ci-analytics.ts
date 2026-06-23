@@ -47,11 +47,17 @@ async function fetchAllPages<T>(
 
   while (hasMore && page <= MAX_REPO_PAGES) {
     const paginatedUrl = `${url}${url.includes('?') ? '&' : '?'}per_page=${perPage}&page=${page}`;
-    const res = await fetchWithRetry(paginatedUrl, {
-      headers: getHeaders(userToken),
-      cache: 'no-store',
-      signal,
-    });
+    const res = await fetchWithRetry(
+      paginatedUrl,
+      {
+        headers: getHeaders(userToken),
+        cache: 'no-store',
+        signal,
+      },
+      0,
+      undefined,
+      userToken
+    );
     if (!res.ok) break;
     const data = await res.json();
     if (!Array.isArray(data) || data.length === 0) {
@@ -108,11 +114,17 @@ async function fetchActionsPages<T>(
 
   while (page <= MAX_ACTION_PAGES) {
     const paginatedUrl = `${url}${url.includes('?') ? '&' : '?'}per_page=${perPage}&page=${page}`;
-    const res = await fetchWithRetry(paginatedUrl, {
-      headers: getHeaders(userToken),
-      cache: 'no-store',
-      signal,
-    });
+    const res = await fetchWithRetry(
+      paginatedUrl,
+      {
+        headers: getHeaders(userToken),
+        cache: 'no-store',
+        signal,
+      },
+      0,
+      undefined,
+      userToken
+    );
     if (!res.ok) break;
     const body = await res.json();
     const items = body[dataField];

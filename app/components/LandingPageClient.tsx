@@ -1,5 +1,4 @@
 'use client';
-import Image from 'next/image';
 import { trackUser } from '@/utils/tracking';
 import { useTranslation } from '@/context/TranslationContext';
 import { renderHeroTitle } from './heroTitle';
@@ -25,7 +24,6 @@ import {
 } from 'lucide-react';
 
 import { X } from 'lucide-react';
-import useLocalStorage from '@/hooks/useLocalStorage';
 
 import { CommitPulseLogo } from '@/components/commitpulse-logo';
 import { CustomizeCTA } from './CustomizeCTA';
@@ -101,12 +99,8 @@ function CountUp({ value, duration = 1000 }: { value: number; duration?: number 
     const start = 0;
     const end = value;
     if (start === end) {
-      // Safe: early-exit guard when the value hasn't changed — avoids scheduling
-      // a setInterval just to immediately clear it. No stale-dependency risk
-      // because `value` is the only dep and this path reads it synchronously.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCount(end);
-      return;
+      const frame = requestAnimationFrame(() => setCount(end));
+      return () => cancelAnimationFrame(frame);
     }
 
     const totalMilliseconds = duration;
@@ -312,7 +306,7 @@ export default function LandingPageClient() {
     return name;
   };
 
-  const [username, setUsername] = useLocalStorage('commitpulse:last-user', '');
+  const [username, setUsername] = useState('');
   const [instantUsername, setInstantUsername] = useState('');
   const [copied, setCopied] = useState(false);
 
@@ -419,7 +413,14 @@ export default function LandingPageClient() {
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
 
-      await pdf.svg(svgElement, {
+      await (
+        pdf as jsPDF & {
+          svg: (
+            element: SVGElement,
+            options: { x: number; y: number; width: number; height: number }
+          ) => Promise<void>;
+        }
+      ).svg(svgElement, {
         x: 10,
         y: 10,
         width: pageWidth - 20,
