@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { optimizeSVG, optimizePathData, minifyCSS } from './optimizer';
+import { optimizeSVG, optimizePathData, minifyCSS, stripComments } from './optimizer';
 
 describe('optimizePathData', () => {
   it('should remove commas and multiple spaces', () => {
@@ -24,6 +24,19 @@ describe('optimizePathData', () => {
     const input = 'M 10,10 C 20,20 30,30 40,40 S 50,50 60,60 Z';
     const expected = 'M10 10C20 20 30 30 40 40S50 50 60 60Z';
     expect(optimizePathData(input)).toBe(expected);
+  });
+});
+
+describe('stripComments', () => {
+  it('should remove XML/HTML comments from a string', () => {
+    const input = 'foo <!-- comment --> bar <!-- comment2 -->baz';
+    const expected = 'foo  bar baz';
+    expect(stripComments(input)).toBe(expected);
+  });
+
+  it('should leave strings without comments untouched', () => {
+    const input = '<svg width="100"><rect/></svg>';
+    expect(stripComments(input)).toBe(input);
   });
 });
 
