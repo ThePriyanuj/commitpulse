@@ -1,3 +1,5 @@
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { LANGUAGE_LABELS, type Language } from '@/context/TranslationContext';
 import en from './en.json';
@@ -56,6 +58,22 @@ describe('locale parity with the English source of truth', () => {
     for (const code of codes) {
       expect(LOCALES[code], `no locale file wired for "${code}"`).toBeDefined();
     }
+  });
+
+  // Read straight from the directory so this reflects the locale files on disk,
+  // not just the imports above. A file present here but absent from
+  // LANGUAGE_LABELS is a dead locale nobody can select (e.g. a complete xx.json
+  // that was never wired into the switcher); a registered code with no file could
+  // never have been imported. The two sets must match exactly. A length check on
+  // LOCALES vs codes cannot catch this: both are Record<Language, ...>, so the
+  // compiler already forces each to the same keys.
+  it('registers exactly the locale files present on disk (no dead or unregistered files)', () => {
+    const localesDir = join(process.cwd(), 'locales');
+    const localeFilesOnDisk = readdirSync(localesDir)
+      .filter((file) => file.endsWith('.json'))
+      .map((file) => file.replace(/\.json$/, ''))
+      .sort();
+    expect(localeFilesOnDisk).toEqual([...codes].sort());
   });
 
   describe.each(nonEnCodes)('%s locale', (code) => {
