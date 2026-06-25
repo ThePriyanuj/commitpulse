@@ -1258,11 +1258,16 @@ export default function DashboardClient({
         )}
       </AnimatePresence>
 
-      <ProfileOptimizerModal
-        isOpen={isOptimizerOpen}
-        onClose={() => setIsOptimizerOpen(false)}
-        userData={initialData}
-      />
+      {isOptimizerOpen &&
+        typeof window !== 'undefined' &&
+        createPortal(
+          <ProfileOptimizerModal
+            isOpen={isOptimizerOpen}
+            onClose={() => setIsOptimizerOpen(false)}
+            userData={initialData}
+          />,
+          document.body
+        )}
 
       {typeof window !== 'undefined' &&
         createPortal(
