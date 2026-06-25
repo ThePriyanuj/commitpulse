@@ -133,6 +133,12 @@ export function findTodayIndex(
 
   return localTodayIndex !== -1 ? localTodayIndex : -1;
 }
+function getDayDifference(fromDate: string, toDate: string): number {
+  const from = new Date(`${fromDate}T00:00:00Z`);
+  const to = new Date(`${toDate}T00:00:00Z`);
+
+  return Math.floor((to.getTime() - from.getTime()) / (24 * 60 * 60 * 1000));
+}
 
 export function calculateStreak(
   calendar?: ContributionCalendar | null,
@@ -180,6 +186,7 @@ export function calculateStreak(
 
   if (todayIndex < 0) {
     const lastIndex = uniqueDays.length - 1;
+
     if (lastIndex < 0) {
       return {
         currentStreak: 0,
@@ -192,6 +199,18 @@ export function calculateStreak(
     const lastDateStr = uniqueDays[lastIndex]?.date;
 
     if (lastDateStr && localTodayStr > lastDateStr) {
+      const gapDays = Math.floor(
+        (new Date(localTodayStr).getTime() - new Date(lastDateStr).getTime()) / 86400000
+      );
+
+      // Issue #6171:
+      // only reject when today is missing AND gap > grace
+      if (gapDays > Math.max(1, grace)) {
+        todayIndex = -1;
+      } else {
+        todayIndex = lastIndex;
+      }
+
       todayIndex = lastIndex;
     } else {
       return {
