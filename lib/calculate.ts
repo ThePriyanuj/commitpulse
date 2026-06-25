@@ -577,19 +577,24 @@ export function calculateWrappedStats(calendar?: ContributionCalendar | null) {
 }
 
 /**
- * Normalizes a contribution calendar to a target timezone.
+ * Normalizes the structural layout of a contribution calendar.
  *
- * This function converts each contribution day's date to the target timezone
- * and re-groups the days by the target timezone's midnight boundaries.
- * This is essential for accurate comparisons between users in different timezones.
+ * This function aggregates duplicate calendar dates, sorts them
+ * chronologically, and re-groups them into Sunday-Saturday week buckets.
  *
- * @param calendar - The contribution calendar to normalize
- * @param targetTimezone - The target timezone to normalize to (e.g., 'UTC', 'America/New_York')
- * @returns A new calendar with dates normalized to the target timezone
+ * NOTE:
+ * ContributionDay entries only contain date strings (YYYY-MM-DD)
+ * and do not include timestamps or timezone information.
+ * Therefore, no actual timezone conversion is performed.
+ *
+ * @param calendar The contribution calendar to normalize
+ * @param _targetTimezone Reserved for future use. Currently unused because
+ * date-only contribution data cannot be shifted across timezone boundaries.
+ * @returns A calendar with normalized week structure
  */
 export function normalizeCalendarToTimezone(
   calendar: ContributionCalendar,
-  targetTimezone: string
+  _targetTimezone: string // retained for backward compatibility with existing callers
 ): ContributionCalendar {
   if (!calendar || !calendar.weeks || calendar.weeks.length === 0) {
     return calendar;
