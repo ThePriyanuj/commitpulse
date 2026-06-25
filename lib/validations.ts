@@ -514,6 +514,9 @@ const baseStreakParamsSchema = z.object({
     .max(200, {
       message: 'gradient_stops cannot exceed 200 characters',
     })
+    .refine((val) => !val || /^[0-9a-fA-F#, ]+$/.test(val), {
+      message: 'gradient_stops contains invalid characters',
+    })
     .optional(),
   gradient_dir: z.enum(['vertical', 'horizontal', 'diagonal']).catch('vertical').optional(),
   disable_particles: z
