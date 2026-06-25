@@ -94,7 +94,7 @@ export function toDimensionValue(val?: string): number | undefined {
 
 export function validateGitHubUsername(username: string): boolean {
   if (!username || typeof username !== 'string') return false;
-  return /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(username);
+  return GITHUB_USERNAME_REGEX.test(username);
 }
 
 /**
@@ -211,7 +211,7 @@ const timeZoneParam = z
   .optional()
   .refine(isValidTimeZone, { message: 'Invalid timezone' });
 
-export const GITHUB_USERNAME_REGEX = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9]))*$/;
+export const GITHUB_USERNAME_REGEX = /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i;
 
 export const githubUsernameSchema = z
   .string({ error: 'Invalid GitHub username' })
