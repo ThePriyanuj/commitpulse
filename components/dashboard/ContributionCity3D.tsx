@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 import type { ActivityData } from '@/types/dashboard';
+import EmptyState from './EmptyState';
 
 // ─── Theme palette (mirrors lib/svg/themes.ts accent colours) ────────────────
 const THEME_PALETTES: Record<string, { accent: string; bg: string; top: string; side: string }> = {
@@ -478,6 +479,10 @@ export default function ContributionCity3D({
   const onTouchEnd = () => {
     lastPinchRef.current = null;
   };
+
+  if (!data || data.length === 0) {
+    return <EmptyState message="No activity found for this timeframe" />;
+  }
 
   return (
     <div className="relative w-full" style={{ background: palette.bg, borderRadius: 12 }}>
