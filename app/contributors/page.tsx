@@ -29,24 +29,43 @@ async function getContributors(): Promise<Contributor[]> {
 
   try {
     const token = process.env.GITHUB_PAT || process.env.GITHUB_TOKEN;
+    const isDummy =
+      token && (token.startsWith('ghp_xxx') || token.includes('dummy') || token === '');
+    let actualToken = isDummy ? undefined : token;
     const controller = new AbortController();
     const timeoutMs = process.env.NODE_ENV === 'test' ? 100 : 10000;
     timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
     const contributors: Contributor[] = [];
     let page = 1;
 
     while (true) {
-      const res = await fetch(
+      let res = await fetch(
         `https://api.github.com/repos/JhaSourav07/commitpulse/contributors?per_page=100&page=${page}`,
         {
           next: { revalidate: 3600 },
           signal: controller.signal,
           headers: {
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(actualToken ? { Authorization: `Bearer ${actualToken}` } : {}),
             Accept: 'application/vnd.github+json',
           },
         }
       );
+
+      if (res.status === 401 && actualToken) {
+        logger.warn('GitHub PAT is invalid or expired. Retrying request without authentication.');
+        actualToken = undefined;
+        res = await fetch(
+          `https://api.github.com/repos/JhaSourav07/commitpulse/contributors?per_page=100&page=${page}`,
+          {
+            next: { revalidate: 3600 },
+            signal: controller.signal,
+            headers: {
+              Accept: 'application/vnd.github+json',
+            },
+          }
+        );
+      }
 
       if (!res.ok) {
         const remaining = res.headers.get('x-ratelimit-remaining');
