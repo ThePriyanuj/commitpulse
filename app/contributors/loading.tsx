@@ -1,9 +1,17 @@
 export default function Loading() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-white text-black dark:bg-black dark:text-white transition-colors">
-      <div className="flex flex-col items-center gap-4">
-        <div className="h-14 w-14 animate-spin rounded-full border-4 border-cyan-400 border-t-transparent" />
-        <p className="text-zinc-500 dark:text-zinc-400">Loading contributors...</p>{' '}
+    <div className="flex min-h-screen items-center justify-center bg-white dark:bg-[#050505] text-black dark:text-white">
+      <div
+        className="flex flex-col items-center gap-6"
+        role="status"
+        aria-live="polite"
+        aria-label="Loading contributors"
+      >
+        {/* Pulsing ring loader */}
+        <div className="relative">
+          <div className="h-16 w-16 animate-spin rounded-full border-2 border-black/10 dark:border-white/10 border-t-cyan-400" />
+          <div className="absolute inset-0 h-16 w-16 rounded-full bg-cyan-400/20 blur-xl animate-pulse" />
+        </div>
       </div>
     </div>
   );

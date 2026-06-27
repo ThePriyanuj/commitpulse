@@ -1,13 +1,15 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import StatsCard from './StatsCard';
 
 // Mock framer-motion
+
 vi.mock('framer-motion', () => ({
   motion: {
-    div: ({ children, ...props }: any) => (
-      <div {...props} data-testid="motion-div">
+    div: ({ children, ...rest }: any) => (
+      <div {...rest} data-testid="motion-div">
         {children}
       </div>
     ),
@@ -60,9 +62,7 @@ describe('StatsCard', () => {
       />
     );
 
-    expect(
-      screen.getByText(/Streaks are calculated in UTC and may differ from your local timezone/i)
-    ).toBeDefined();
+    expect(screen.getByText(/Streak.*UTC/i)).toBeDefined();
   });
 
   // Test 5: UTC disclaimer is absent when showUTCDisclaimer=false

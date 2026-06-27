@@ -5,6 +5,7 @@ import { rateLimit } from '@/lib/rate-limit';
 
 vi.mock('@/lib/rate-limit', () => ({
   rateLimit: vi.fn(),
+  getRateLimitHeaders: vi.fn(() => ({})),
 }));
 
 describe('middleware', () => {
@@ -86,7 +87,23 @@ describe('middleware', () => {
     expect(response.headers.get('X-RateLimit-Remaining')).toBe('59');
   });
 
-  it('uses first IP from x-forwarded-for', async () => {
+  it('uses connection IP (request.ip) if present', async () => {
+    vi.mocked(rateLimit).mockResolvedValue({
+      success: true,
+      limit: 60,
+      remaining: 59,
+      reset: 123456789,
+    });
+
+    const request = new NextRequest('http://localhost:3000/api/streak?user=octocat');
+    Object.defineProperty(request, 'ip', { value: '203.0.113.10', writable: true });
+
+    await middleware(request);
+
+    expect(rateLimit).toHaveBeenCalledWith('203.0.113.10', 60, 60000, 'api');
+  });
+
+  it('ignores spoofed X-Forwarded-For when request.ip is present', async () => {
     vi.mocked(rateLimit).mockResolvedValue({
       success: true,
       limit: 60,
@@ -99,32 +116,14 @@ describe('middleware', () => {
         'x-forwarded-for': '1.2.3.4, 5.6.7.8',
       },
     });
+    Object.defineProperty(request, 'ip', { value: '203.0.113.10', writable: true });
 
     await middleware(request);
 
-    expect(rateLimit).toHaveBeenCalledWith('1.2.3.4', 60, 60000);
+    expect(rateLimit).toHaveBeenCalledWith('203.0.113.10', 60, 60000, 'api');
   });
 
-  it('uses x-real-ip if x-forwarded-for is missing', async () => {
-    vi.mocked(rateLimit).mockResolvedValue({
-      success: true,
-      limit: 60,
-      remaining: 59,
-      reset: 123456789,
-    });
-
-    const request = new NextRequest('http://localhost:3000/api/streak?user=octocat', {
-      headers: {
-        'x-real-ip': '9.9.9.9',
-      },
-    });
-
-    await middleware(request);
-
-    expect(rateLimit).toHaveBeenCalledWith('9.9.9.9', 60, 60000);
-  });
-
-  it('defaults to 127.0.0.1 when no IP headers', async () => {
+  it('defaults to 127.0.0.1 when no request.ip and headers are untrusted/missing', async () => {
     vi.mocked(rateLimit).mockResolvedValue({
       success: true,
       limit: 60,
@@ -136,45 +135,6 @@ describe('middleware', () => {
 
     await middleware(request);
 
-    expect(rateLimit).toHaveBeenCalledWith('127.0.0.1', 60, 60000);
-  });
-
-  it('prefers x-forwarded-for over x-real-ip', async () => {
-    vi.mocked(rateLimit).mockResolvedValue({
-      success: true,
-      limit: 60,
-      remaining: 59,
-      reset: 123456789,
-    });
-
-    const request = new NextRequest('http://localhost:3000/api/streak?user=octocat', {
-      headers: {
-        'x-forwarded-for': '1.2.3.4, 5.6.7.8',
-        'x-real-ip': '9.9.9.9',
-      },
-    });
-
-    await middleware(request);
-
-    expect(rateLimit).toHaveBeenCalledWith('1.2.3.4', 60, 60000);
-  });
-
-  it('handles multiple IPs with whitespace', async () => {
-    vi.mocked(rateLimit).mockResolvedValue({
-      success: true,
-      limit: 60,
-      remaining: 59,
-      reset: 123456789,
-    });
-
-    const request = new NextRequest('http://localhost:3000/api/streak?user=octocat', {
-      headers: {
-        'x-forwarded-for': '1.2.3.4,  5.6.7.8,  9.10.11.12',
-      },
-    });
-
-    await middleware(request);
-
-    expect(rateLimit).toHaveBeenCalledWith('1.2.3.4', 60, 60000);
+    expect(rateLimit).toHaveBeenCalledWith('127.0.0.1', 60, 60000, 'api');
   });
 });

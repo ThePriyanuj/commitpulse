@@ -1,31 +1,184 @@
-// lib/github.ts
-
-import type { ContributionCalendar, ContributionDay } from '@/types';
-import { calculateStreak, aggregateCalendars } from '@/lib/calculate';
+import 'server-only';
+// Resolves Issue #6105 (Intelligent API Resilience)
+import type {
+  ContributionCalendar,
+  ContributionDay,
+  ContributedRepo,
+  ExtendedContributionData,
+  RepoContribution,
+  GraphNode,
+  GraphLink,
+} from '@/types';
+import { calculateStreak, aggregateCalendars, convertLocalToUtc } from '@/lib/calculate';
 import { DistributedCache } from '@/lib/cache';
 import { LANGUAGE_COLORS } from '@/lib/svg/languageColors';
 import { CONTRIBUTION_MILESTONES, STREAK_MILESTONES } from './svg/constants';
+import { quotaMonitor } from '@/services/github/quota-monitor';
+import pLimit from 'p-limit';
+import logger from '@/lib/logger';
+import { decryptGitHubToken, isEncryptedToken } from '@/lib/github-token-encryption';
 
 interface GitHubRepo {
+  name: string;
   stargazers_count: number;
   language: string | null;
+  fork?: boolean;
+  forks_count?: number;
+  updated_at?: string;
+  pushed_at?: string;
+  owner?: { login: string };
+  created_at?: string;
+  homepage?: string | null;
 }
 
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 500;
-const GRAPHQL_TIMEOUT_MS = 8000; // 8s for GraphQL endpoint
-const REST_TIMEOUT_MS = 5000; // 5s for REST endpoints
+const MAX_RETRIES = Number(process.env.GITHUB_MAX_RETRIES ?? '3');
+const BASE_DELAY_MS = Number(process.env.GITHUB_BASE_DELAY_MS ?? '500');
+const MAX_RETRY_DELAY_MS = Number(process.env.GITHUB_MAX_RETRY_DELAY_MS ?? '5000');
+
+export function getJitteredBackoff(attempt: number): number {
+  const base = BASE_DELAY_MS * Math.pow(2, attempt);
+  const jitter = 0.5 + Math.random() * 0.5;
+  return Math.round(base * jitter);
+}
+
+export function shouldFallbackOnError(err: unknown): boolean {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+
+  if (
+    msg.includes('not found') ||
+    msg.includes('Not Found') ||
+    msg.includes('401') ||
+    msg.includes('Unauthorized') ||
+    msg.includes('token') ||
+    msg.includes('PAT') ||
+    msg.includes('Authorization') ||
+    msg.includes('status 500') ||
+    msg.includes('error: 500') ||
+    msg.includes('Bad credentials')
+  ) {
+    return false;
+  }
+
+  if (
+    msg.includes('fetch') ||
+    msg.includes('timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('AbortError') ||
+    msg.includes('rate limit') ||
+    msg.includes('RATE_LIMITED') ||
+    msg.includes('Rate Limit') ||
+    err instanceof RateLimitError
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+const GRAPHQL_TIMEOUT_MS = Number(process.env.GITHUB_GRAPHQL_TIMEOUT_MS ?? '8000');
+const REST_TIMEOUT_MS = Number(process.env.GITHUB_REST_TIMEOUT_MS ?? '5000');
+const ORG_MEMBER_LIMIT = Number(process.env.GITHUB_ORG_MEMBER_LIMIT ?? '100');
+const GRAPHQL_REPOSITORY_PAGE_SIZE = 100;
+const MAX_GRAPHQL_REPOSITORY_RESULTS = 500;
+
+let currentTokenIndex = 0;
+const rateLimitedTokens = new Map<string, number>();
+const tokenStats = new Map<string, { remaining: number; resetTime: number }>();
+
+export function getTokenStatsForTests() {
+  return tokenStats;
+}
+
+export function getGlobalCircuitBreakerOpenUntilForTests() {
+  return globalCircuitBreakerOpenUntil;
+}
+
+//Explicit, strongly-typed Error subclass
+export class RateLimitError extends Error {
+  constructor(
+    message: string,
+    public readonly retryAfterMs: number
+  ) {
+    super(message);
+    this.name = 'RateLimitError';
+  }
+}
+
+// Global circuit state tracking
+let globalCircuitBreakerOpenUntil = 0;
+
+export function getGitHubTokens(): string[] {
+  const envToken = process.env.GITHUB_PAT || process.env.GITHUB_TOKEN || '';
+  return envToken
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t !== '')
+    .map((token) => {
+      if (isEncryptedToken(token)) {
+        try {
+          return decryptGitHubToken(token);
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn(`Failed to decrypt GitHub token: ${message}`);
+          return token;
+        }
+      }
+      return token;
+    });
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'name' in error &&
+    (error as { name?: unknown }).name === 'AbortError'
+  );
+}
 
 export async function fetchWithRetry(
   url: string | URL,
   options: RequestInit,
   attempt = 0,
-  timeoutMs?: number
+  timeoutMs?: number,
+  userToken?: string
 ): Promise<Response> {
+  const now = Date.now();
+
+  // Problem 1 & 5 Fix: Global Short-Circuit Guard at the absolute front door
+  if (now < globalCircuitBreakerOpenUntil) {
+    throw new RateLimitError(
+      'Circuit Breaker Open: Request blocked due to total token exhaustion.',
+      globalCircuitBreakerOpenUntil - now
+    );
+  }
+
   const resolvedTimeout =
     timeoutMs ?? (url.toString().includes('graphql') ? GRAPHQL_TIMEOUT_MS : REST_TIMEOUT_MS);
 
   if (options.signal?.aborted) throw new Error('AbortError');
+
+  const urlStr = url.toString();
+  const isGitHubRequest = urlStr.includes('api.github.com');
+  let currentToken = '';
+
+  if (isGitHubRequest) {
+    try {
+      currentToken = userToken || getGitHubToken();
+      // Ensure your headers instantiation copies existing layout keys safely
+      options.headers = {
+        ...options.headers,
+        Authorization: `bearer ${currentToken}`,
+      };
+    } catch (e) {
+      // Problem 3 Fix: Never swallow or compromise a structural RateLimitError instance
+      if (e instanceof RateLimitError) {
+        throw e;
+      }
+      if (attempt === 0) throw e;
+    }
+  }
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), resolvedTimeout);
@@ -51,16 +204,62 @@ export async function fetchWithRetry(
 
   if (didThrow) {
     if (options.signal?.aborted) throw fetchError;
-    if (fetchError instanceof Error && fetchError.name === 'AbortError') {
-      throw new Error(`GitHub API request timed out after ${resolvedTimeout / 1000}s`);
+    const isTimeoutAbort = isAbortError(fetchError);
+    if (attempt >= MAX_RETRIES) {
+      if (isTimeoutAbort) {
+        throw new Error(`GitHub API request timed out after ${resolvedTimeout / 1000}s`);
+      }
+      throw fetchError;
     }
-    if (attempt >= MAX_RETRIES) throw fetchError;
-    const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+    const delay = getJitteredBackoff(attempt);
     await new Promise((resolve) => setTimeout(resolve, delay));
-    return fetchWithRetry(url, options, attempt + 1, timeoutMs);
+    return fetchWithRetry(url, options, attempt + 1, timeoutMs, userToken);
   }
 
   if (!res) throw new Error('GitHub API request failed without a response');
+
+  try {
+    quotaMonitor.updateQuotaFromHeaders(res.headers, currentToken);
+  } catch (err) {
+    logger.error('Failed to update quota monitor', {
+      component: 'GitHub',
+      error: err,
+    });
+  }
+
+  if (isGitHubRequest && currentToken && res) {
+    const remainingHeader = res.headers.get('x-ratelimit-remaining');
+    const resetHeader = res.headers.get('x-ratelimit-reset');
+    if (remainingHeader !== null) {
+      const remaining = parseInt(remainingHeader, 10);
+      let resetTime = Date.now() + 60 * 1000;
+      if (resetHeader) {
+        const parsed = parseInt(resetHeader, 10);
+        if (!Number.isNaN(parsed)) {
+          resetTime = parsed * 1000;
+        }
+      }
+      if (!Number.isNaN(remaining)) {
+        tokenStats.set(currentToken, { remaining, resetTime });
+      }
+    }
+  }
+
+  // Handle invalid/expired tokens (HTTP 401)
+  const isInvalidToken = res.status === 401;
+  if (isInvalidToken && currentToken) {
+    rateLimitedTokens.set(currentToken, Date.now() + 24 * 60 * 60 * 1000); // disable for 24h
+    const tokens = getGitHubTokens();
+    if (tokens.length > 1) {
+      currentTokenIndex = (currentTokenIndex + 1) % tokens.length;
+    }
+    // Retry immediately with the next token if available
+    if (attempt < MAX_RETRIES && tokens.length > 1) {
+      const delay = getJitteredBackoff(attempt);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return fetchWithRetry(url, options, attempt + 1, timeoutMs, userToken);
+    }
+  }
 
   // Check for rate limit headers
   const retryAfter = res.headers.get('retry-after');
@@ -68,9 +267,26 @@ export async function fetchWithRetry(
     res.status === 429 || (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0');
 
   if (isRateLimited) {
+    if (currentToken) {
+      const resetHeader = res.headers.get('x-ratelimit-reset');
+      let resetTime = Date.now() + 60 * 1000; // default 1 min
+      if (resetHeader) {
+        const parsed = parseInt(resetHeader, 10);
+        if (!Number.isNaN(parsed)) {
+          resetTime = parsed * 1000;
+        }
+      }
+      rateLimitedTokens.set(currentToken, resetTime);
+      tokenStats.set(currentToken, { remaining: 0, resetTime });
+      const tokens = getGitHubTokens();
+      if (tokens.length > 1) {
+        currentTokenIndex = (currentTokenIndex + 1) % tokens.length;
+      }
+    }
+
     if (attempt >= MAX_RETRIES) return res;
 
-    let delay = BASE_DELAY_MS * Math.pow(2, attempt);
+    let delay = getJitteredBackoff(attempt);
     if (retryAfter) {
       const parsed = parseInt(retryAfter, 10);
       if (!Number.isNaN(parsed) && String(parsed) === retryAfter) {
@@ -88,21 +304,101 @@ export async function fetchWithRetry(
 
     // If the delay is too long (e.g., > 5 seconds), it's a hard limit.
     // Return immediately to avoid serverless function timeouts.
-    if (delay > 5000) {
+    if (delay > MAX_RETRY_DELAY_MS) {
       return res;
     }
 
     await new Promise((resolve) => setTimeout(resolve, delay));
-    return fetchWithRetry(url, options, attempt + 1, timeoutMs);
+    return fetchWithRetry(url, options, attempt + 1, timeoutMs, userToken);
   }
 
   // Only retry on 5xx — all other statuses are returned immediately
   const shouldRetry = res.status >= 500;
   if (!shouldRetry || attempt >= MAX_RETRIES) return res;
 
-  const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+  const delay = getJitteredBackoff(attempt);
   await new Promise((resolve) => setTimeout(resolve, delay));
-  return fetchWithRetry(url, options, attempt + 1, timeoutMs);
+  return fetchWithRetry(url, options, attempt + 1, timeoutMs, userToken);
+}
+
+const GRAPHQL_INJECTION_PATTERNS: RegExp[] = [
+  /;\s*DROP/i,
+  /;\s*DELETE/i,
+  /;\s*TRUNCATE/i,
+  /union\s+select/i,
+  /exec\s*\(/i,
+];
+
+function assertValidGraphQLBody(options: RequestInit): void {
+  if (typeof options.body !== 'string') return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(options.body);
+  } catch {
+    throw new Error('GraphQL request body is not valid JSON');
+  }
+  const query = (parsed as Record<string, unknown>)?.query;
+  if (typeof query !== 'string' || query.trim() === '') {
+    throw new Error('GraphQL request must include a non-empty query string');
+  }
+  for (const pattern of GRAPHQL_INJECTION_PATTERNS) {
+    if (pattern.test(query)) {
+      throw new Error('GraphQL query contains disallowed patterns');
+    }
+  }
+  const open = (query.match(/{/g) ?? []).length;
+  const close = (query.match(/}/g) ?? []).length;
+  if (open === 0 || open !== close) {
+    throw new Error('GraphQL query has unbalanced braces');
+  }
+
+  const MAX_QUERY_DEPTH = 10;
+  let depth = 0;
+  let maxDepth = 0;
+  for (const ch of query) {
+    if (ch === '{') {
+      depth++;
+      if (depth > maxDepth) maxDepth = depth;
+    } else if (ch === '}') {
+      depth--;
+    }
+    if (maxDepth > MAX_QUERY_DEPTH) {
+      throw new Error(`GraphQL query exceeds maximum depth of ${MAX_QUERY_DEPTH}`);
+    }
+  }
+}
+
+// Wraps fetchWithRetry to also retry on GraphQL-level RATE_LIMITED errors
+// that GitHub returns with HTTP 200 OK instead of 429.
+async function fetchGraphQLWithRetry(
+  url: string | URL,
+  options: RequestInit,
+  attempt = 0,
+  timeoutMs?: number,
+  userToken?: string
+): Promise<Response> {
+  if (attempt === 0) assertValidGraphQLBody(options);
+  const res = await fetchWithRetry(url, options, attempt, timeoutMs, userToken);
+
+  if (!res.ok || attempt >= MAX_RETRIES) return res;
+
+  const body: unknown = await res
+    .clone()
+    .json()
+    .catch(() => null);
+  const isBodyRateLimited =
+    Array.isArray((body as { errors?: unknown })?.errors) &&
+    (body as { errors: unknown[] }).errors.some(
+      (e) =>
+        (e as { type?: string })?.type === 'RATE_LIMITED' ||
+        (e as { message?: string })?.message?.toLowerCase().includes('rate limit')
+    );
+
+  if (!isBodyRateLimited) return res;
+
+  const delay = getJitteredBackoff(attempt);
+  await new Promise((resolve) => setTimeout(resolve, delay));
+  return fetchGraphQLWithRetry(url, options, attempt + 1, timeoutMs, userToken);
 }
 
 const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql';
@@ -134,12 +430,25 @@ function getGitHubRateLimitInfo(res: Response): GitHubRateLimitInfo {
   };
 }
 
-function createRateLimitError(res: Response): Error {
-  const rateLimit = getGitHubRateLimitInfo(res);
-  const resetMessage = rateLimit.resetAt ? ` Please try again after ${rateLimit.resetAt}.` : '';
+// Extract rate limit telemetry headers if available
+function createRateLimitError(res: Response): RateLimitError {
+  const limitHeader = res.headers.get('x-ratelimit-limit');
+  const remainingHeader = res.headers.get('x-ratelimit-remaining');
+  const resetHeader = res.headers.get('x-ratelimit-reset');
 
-  return new Error(
-    `GitHub API rate limit exceeded.${resetMessage} Configure GITHUB_TOKEN to increase the request limit.`
+  const now = Date.now();
+  let retryAfterMs = 60000; // Default 1-minute safety window
+
+  if (resetHeader) {
+    const resetUnixTimeSeconds = parseInt(resetHeader, 10);
+    if (!isNaN(resetUnixTimeSeconds)) {
+      retryAfterMs = Math.max(0, resetUnixTimeSeconds * 1000 - now);
+    }
+  }
+
+  return new RateLimitError(
+    `GitHub API rate limit exceeded. Limit: ${limitHeader || 'unknown'}, Remaining: ${remainingHeader || '0'}.`,
+    retryAfterMs
   );
 }
 
@@ -155,20 +464,41 @@ function throwIfRateLimited(res: Response): void {
   }
 }
 
-type GitHubContributionResponse = {
+interface GitHubGraphQLResponse {
   data?: {
     user: {
-      contributionsCollection: { contributionCalendar: ContributionCalendar };
+      contributionsCollection: {
+        totalPullRequestContributions: number;
+        totalIssueContributions: number;
+        totalPullRequestReviewContributions: number;
+        contributionCalendar: ContributionCalendar;
+        commitContributionsByRepository: RepoContribution[];
+      };
     } | null;
   };
   errors?: unknown;
-};
+}
+
+interface GitHubContributedReposResponse {
+  data?: {
+    user: {
+      repositoriesContributedTo: {
+        nodes: ContributedRepo[];
+        pageInfo: {
+          hasNextPage: boolean;
+          endCursor: string | null;
+        };
+      } | null;
+    } | null;
+  };
+  errors?: unknown;
+}
 
 function getGraphQLErrorMessage(errors: unknown): string {
   if (!Array.isArray(errors)) return 'GitHub GraphQL API returned an unknown error';
   const firstError = errors[0];
   if (
-    firstError &&
+    firstError !== null &&
     typeof firstError === 'object' &&
     'message' in firstError &&
     typeof firstError.message === 'string'
@@ -180,19 +510,22 @@ function getGraphQLErrorMessage(errors: unknown): string {
 
 type FetchOptions = {
   bypassCache?: boolean;
+  forceRefresh?: boolean;
   from?: string;
   to?: string;
+  rangeLabel?: string;
   signal?: AbortSignal;
+  // Authenticated user's OAuth token. When set, GitHub calls use THIS token
+  // (the user's personal rate-limit quota) instead of the global PAT pool.
+  token?: string;
 };
 
-export const GITHUB_CACHE_TTL_MS = 5 * 60 * 1000;
+export const GITHUB_CACHE_TTL_MS = Number(process.env.GITHUB_CACHE_TTL_MS ?? String(5 * 60 * 1000));
 
-const contributionsCache = new DistributedCache<ContributionCalendar>(1000);
+export const contributionsCache = new DistributedCache<ExtendedContributionData>(1000);
 const profileCache = new DistributedCache<GitHubUserProfile>(1000);
 const reposCache = new DistributedCache<GitHubRepo[]>(500);
-const pendingContributions = new Map<string, Promise<ContributionCalendar>>();
-const pendingProfiles = new Map<string, Promise<GitHubUserProfile>>();
-const pendingRepos = new Map<string, Promise<GitHubRepo[]>>();
+const contributedReposCache = new DistributedCache<ContributedRepo[]>(500);
 
 interface GitHubUserProfile {
   login: string;
@@ -204,85 +537,399 @@ interface GitHubUserProfile {
   created_at: string;
   bio: string | null;
   location: string | null;
-  type?: string; // e.g. "User" or "Organization"
+  type?: string;
   plan?: { name?: string } | null;
+  isOfflineFallback?: boolean;
+}
+
+function sanitizeUserProfile(profile: GitHubUserProfile): GitHubUserProfile {
+  return {
+    login: profile.login,
+    name: profile.name,
+    avatar_url: profile.avatar_url,
+    public_repos: profile.public_repos,
+    followers: profile.followers,
+    following: profile.following,
+    created_at: profile.created_at,
+    bio: profile.bio,
+    location: profile.location,
+    type: profile.type,
+    plan: profile.plan ? { name: profile.plan.name } : null,
+  };
+}
+
+function sanitizeRepo(repo: GitHubRepo): GitHubRepo {
+  return {
+    name: repo.name,
+    stargazers_count: repo.stargazers_count,
+    language: repo.language,
+    fork: repo.fork,
+    forks_count: repo.forks_count,
+    updated_at: repo.updated_at,
+    pushed_at: repo.pushed_at,
+    created_at: repo.created_at,
+    owner: repo.owner,
+    homepage: repo.homepage,
+  };
 }
 
 export function cacheKey(
-  kind: 'contributions' | 'profile' | 'repos',
+  kind: 'contributions' | 'profile' | 'repos' | 'repos:contributed',
   username: string,
   year?: string
+): string;
+export function cacheKey(
+  kind: 'contributions' | 'profile' | 'repos' | 'repos:contributed',
+  username: string,
+  from?: string,
+  to?: string
+): string;
+export function cacheKey(
+  kind: 'contributions' | 'profile' | 'repos' | 'repos:contributed',
+  username: string,
+  yearOrFrom?: string,
+  to?: string
 ): string {
-  return year ? `${kind}:${username.toLowerCase()}:${year}` : `${kind}:${username.toLowerCase()}`;
+  if (yearOrFrom && to) {
+    return `${kind}:${username.toLowerCase()}:${yearOrFrom.substring(0, 10)}:${to.substring(0, 10)}`;
+  }
+  return yearOrFrom
+    ? `${kind}:${username.toLowerCase()}:${yearOrFrom.substring(0, 4)}`
+    : `${kind}:${username.toLowerCase()}`;
 }
 
 export function clearGitHubApiCacheForTests(): void {
   contributionsCache.clear();
   profileCache.clear();
   reposCache.clear();
-  pendingContributions.clear();
-  pendingProfiles.clear();
-  pendingRepos.clear();
-}
-
-function dedupeRequest<T>(
-  pendingRequests: Map<string, Promise<T>>,
-  key: string,
-  load: () => Promise<T>
-): Promise<T> {
-  const pending = pendingRequests.get(key);
-  if (pending) return pending;
-
-  const request = load().finally(() => {
-    pendingRequests.delete(key);
-  });
-  pendingRequests.set(key, request);
-  return request;
+  contributedReposCache.clear();
+  rateLimitedTokens.clear();
+  tokenStats.clear();
+  currentTokenIndex = 0;
+  globalCircuitBreakerOpenUntil = 0;
 }
 
 function getGitHubToken(): string {
-  const token = process.env.GITHUB_PAT || process.env.GITHUB_TOKEN;
+  const tokens = getGitHubTokens();
   const MISSING_GITHUB_TOKEN_MESSAGE = 'GitHub token is missing. Set GITHUB_PAT or GITHUB_TOKEN.';
-  if (!token || token.trim() === '') {
+  if (tokens.length === 0) {
     throw new Error(MISSING_GITHUB_TOKEN_MESSAGE);
   }
 
-  return token;
+  const now = Date.now();
+  const tokenSet = new Set(tokens);
+
+  // Clear expired and missing env tokens from map
+  for (const [t, expiry] of rateLimitedTokens.entries()) {
+    if (now >= expiry || !tokenSet.has(t)) {
+      rateLimitedTokens.delete(t);
+    }
+  }
+
+  // Clear missing env tokens from tokenStats
+  for (const t of tokenStats.keys()) {
+    if (!tokenSet.has(t)) {
+      tokenStats.delete(t);
+    }
+  }
+
+  // Find all active (non-rate-limited) tokens
+  const activeTokens: string[] = [];
+  for (const token of tokens) {
+    const expiry = rateLimitedTokens.get(token);
+    if (expiry && now < expiry) {
+      continue;
+    }
+    const stats = tokenStats.get(token);
+    if (stats && stats.remaining === 0 && stats.resetTime > now) {
+      continue;
+    }
+    activeTokens.push(token);
+  }
+
+  if (activeTokens.length > 0) {
+    // Separate into known and unknown
+    const unknownTokens = activeTokens.filter((t) => !tokenStats.has(t));
+    let bestToken = '';
+
+    if (unknownTokens.length > 0) {
+      // Two-phase fallback: pick the next unknown token in round-robin order
+      let bestTokenIndex = -1;
+      for (let i = 0; i < tokens.length; i++) {
+        const idx = (currentTokenIndex + i) % tokens.length;
+        const token = tokens[idx];
+        if (unknownTokens.includes(token)) {
+          bestToken = token;
+          bestTokenIndex = idx;
+          break;
+        }
+      }
+      if (bestTokenIndex !== -1) {
+        currentTokenIndex = bestTokenIndex;
+        return bestToken;
+      }
+    } else {
+      // All active tokens have known stats: pick the one with the highest remaining quota
+      let maxRemaining = -1;
+      let bestIndex = -1;
+      for (const token of activeTokens) {
+        const stats = tokenStats.get(token)!;
+        if (stats.remaining > maxRemaining) {
+          maxRemaining = stats.remaining;
+          bestToken = token;
+          bestIndex = tokens.indexOf(token);
+        }
+      }
+      if (bestIndex !== -1) {
+        currentTokenIndex = bestIndex;
+        return bestToken;
+      }
+    }
+  }
+
+  // Calculate the optimal, absolute earliest reset timestamp if all tokens are limited
+  const resetTimes: number[] = [];
+  for (const token of tokens) {
+    const expiry = rateLimitedTokens.get(token);
+    if (expiry) {
+      resetTimes.push(expiry);
+    }
+    const stats = tokenStats.get(token);
+    if (stats) {
+      resetTimes.push(stats.resetTime);
+    }
+  }
+
+  const earliestResetTime = resetTimes.length > 0 ? Math.min(...resetTimes) : now + 60 * 1000;
+  const backoffMs = Math.max(0, earliestResetTime - now);
+
+  // Trip the global circuit breaker state immediately
+  globalCircuitBreakerOpenUntil = earliestResetTime;
+
+  // Throw RateLimitError
+  throw new RateLimitError('API Rate Limit Exceeded', backoffMs);
 }
 
-const getHeaders = () => ({
-  Authorization: `bearer ${getGitHubToken()}`,
+const getHeaders = (userToken?: string) => ({
+  Authorization: `bearer ${userToken || getGitHubToken()}`,
   'Content-Type': 'application/json',
 });
-
-export function validateGitHubUsername(username: string): boolean {
-  return /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(username);
-}
 
 export function displayName(profile: GitHubUserProfile): string {
   if (typeof profile.name === 'string' && profile.name.trim() !== '') return profile.name;
   return profile.login;
 }
 
+export function getCircuitTelemetry() {
+  const now = Date.now();
+  const isOpen = now < globalCircuitBreakerOpenUntil;
+  return {
+    isOpen,
+    resetInMs: isOpen ? Math.max(0, globalCircuitBreakerOpenUntil - now) : 0,
+  };
+}
+
 /* ==========================================================================
  * DATA FETCHING
  * ========================================================================== */
 
+const FETCH_TIMEOUT_MS = Number(process.env.GITHUB_FETCH_TIMEOUT_MS ?? '4000');
+const activeContributionsPromises = new Map<string, Promise<ExtendedContributionData>>();
+
+export function getMockContributions(): ExtendedContributionData {
+  return {
+    calendar: {
+      totalContributions: 0,
+      weeks: [],
+      lastSyncedAt: new Date().toISOString(),
+    },
+    repoContributions: [],
+    totalPRs: 0,
+    totalIssues: 0,
+    totalReviews: 0,
+    isOfflineFallback: true,
+  };
+}
+
 export async function fetchGitHubContributions(
   username: string,
   options: FetchOptions = {}
-): Promise<ContributionCalendar> {
-  const key = cacheKey('contributions', username, options.from?.substring(0, 4));
-  if (!options.bypassCache) {
+): Promise<ExtendedContributionData> {
+  const key = cacheKey('contributions', username, options.from, options.to);
+  const LONG_CACHE_TTL = Number(
+    process.env.GITHUB_LONG_CACHE_TTL_MS ?? String(7 * 24 * 60 * 60 * 1000)
+  );
+
+  const shouldFetch = (cached: ExtendedContributionData) => {
+    const now = Date.now();
+    return cached?.calendar.lastSyncedAt
+      ? now - new Date(cached.calendar.lastSyncedAt).getTime() > GITHUB_CACHE_TTL_MS
+      : true;
+  };
+
+  const loadWithTimeout = async (): Promise<ExtendedContributionData> => {
+    const controller = new AbortController();
+    if (options.signal) {
+      if (options.signal.aborted) {
+        controller.abort();
+      } else {
+        options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+      }
+    }
+
+    let timerId = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timerId = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`GitHub API request timed out after ${FETCH_TIMEOUT_MS / 1000}s`));
+      }, FETCH_TIMEOUT_MS);
+      if (timerId && typeof timerId.unref === 'function') {
+        timerId.unref();
+      }
+    });
+
+    try {
+      return await Promise.race([
+        fetchContributionsUncached(username, key, { ...options, signal: controller.signal }),
+        timeoutPromise,
+      ]);
+    } finally {
+      if (timerId) {
+        clearTimeout(timerId);
+      }
+    }
+  };
+
+  const coalescedLoad = () => {
+    if (options.signal) {
+      return loadWithTimeout();
+    }
+    let pending = activeContributionsPromises.get(key);
+    if (!pending) {
+      pending = loadWithTimeout().finally(() => {
+        activeContributionsPromises.delete(key);
+      });
+      activeContributionsPromises.set(key, pending);
+      // Safety max-age cleanup: remove from promise map after 30 seconds anyway
+      const timer = setTimeout(() => {
+        activeContributionsPromises.delete(key);
+      }, 30000);
+      if (timer && typeof timer.unref === 'function') {
+        timer.unref();
+      }
+    }
+    return pending;
+  };
+
+  if (options.signal) {
+    if (options.bypassCache || options.forceRefresh) {
+      try {
+        return await loadWithTimeout();
+      } catch (err: unknown) {
+        if (shouldFallbackOnError(err)) {
+          const staleData = await contributionsCache.get(key);
+          if (staleData) {
+            logger.warn('GitHub API fetch failed, falling back to stale cache', {
+              component: 'GitHub API',
+              username,
+              error: err,
+            });
+            return {
+              ...staleData,
+              isOfflineFallback: true,
+            };
+          }
+          return getMockContributions();
+        }
+        throw err;
+      }
+    }
     const cached = await contributionsCache.get(key);
-    if (cached) return cached;
+    if (cached !== null && !shouldFetch(cached)) {
+      return cached;
+    }
+    try {
+      return await loadWithTimeout();
+    } catch (err: unknown) {
+      if (shouldFallbackOnError(err)) {
+        const staleData = await contributionsCache.get(key);
+        if (staleData) {
+          logger.warn('GitHub API fetch failed, falling back to stale cache', {
+            component: 'GitHub API',
+            username,
+            error: err,
+          });
+          return {
+            ...staleData,
+            isOfflineFallback: true,
+          };
+        }
+        return getMockContributions();
+      }
+      throw err;
+    }
   }
 
-  const load = async () => {
-    const query = `
+  if (options.bypassCache || options.forceRefresh) {
+    try {
+      const result = await coalescedLoad();
+      if (options.forceRefresh) {
+        await contributionsCache.set(key, result, LONG_CACHE_TTL);
+      }
+      return result;
+    } catch (err: unknown) {
+      if (shouldFallbackOnError(err)) {
+        const staleData = await contributionsCache.get(key);
+        if (staleData) {
+          console.warn(
+            `[GitHub API] Fetch failed or timed out for "${username}", falling back to stale cache:`,
+            err
+          );
+          return {
+            ...staleData,
+            isOfflineFallback: true,
+          };
+        }
+        return getMockContributions();
+      }
+      throw err;
+    }
+  }
+
+  try {
+    return await contributionsCache.getOrSet(key, coalescedLoad, LONG_CACHE_TTL, shouldFetch);
+  } catch (err: unknown) {
+    if (shouldFallbackOnError(err)) {
+      const staleData = await contributionsCache.get(key);
+      if (staleData) {
+        logger.warn('GitHub API fetch failed, falling back to stale cache', {
+          component: 'GitHub API',
+          username,
+          error: err,
+        });
+        return {
+          ...staleData,
+          isOfflineFallback: true,
+        };
+      }
+      return getMockContributions();
+    }
+    throw err;
+  }
+}
+
+async function fetchContributionsUncached(
+  username: string,
+  key: string,
+  options: FetchOptions
+): Promise<ExtendedContributionData> {
+  const query = `
       query($login: String!, $from: DateTime, $to: DateTime) {
         user(login: $login) {
           contributionsCollection(from: $from, to: $to) {
+            totalPullRequestContributions
+            totalIssueContributions
+            totalPullRequestReviewContributions
             contributionCalendar {
               totalContributions
               weeks {
@@ -293,89 +940,147 @@ export async function fetchGitHubContributions(
                 }
               }
             }
+            commitContributionsByRepository(maxRepositories: 100) {
+              repository {
+                name
+                nameWithOwner
+                primaryLanguage {
+                  name
+                }
+              }
+              contributions {
+                totalCount
+              }
+            }
           }
         }
       }
     `;
 
-    const res = await fetchWithRetry(GITHUB_GRAPHQL_URL, {
+  const res = await fetchGraphQLWithRetry(
+    GITHUB_GRAPHQL_URL,
+    {
       method: 'POST',
-      headers: getHeaders(),
+      headers: getHeaders(options.token),
       body: JSON.stringify({
         query,
         variables: { login: username, from: options.from, to: options.to },
       }),
       cache: 'no-store',
       signal: options.signal,
-    });
+    },
+    0,
+    undefined,
+    options.token
+  );
 
-    if (!res.ok) {
-      throwIfRateLimited(res);
-      if (res.status === 401) throw new Error('GitHub PAT is invalid or missing');
-      throw new Error(
-        `GitHub GraphQL API returned status ${res.status} after ${MAX_RETRIES} retries`
+  if (!res.ok) {
+    throwIfRateLimited(res);
+
+    const bodyText = await res.text().catch(() => '');
+
+    if (res.status === 401) {
+      throw new Error(`GitHub PAT is invalid or missing. Response: ${bodyText || '<empty>'}`);
+    }
+
+    throw new Error(
+      `GitHub GraphQL API returned status ${res.status} after ${MAX_RETRIES} retries. Response: ${bodyText || '<empty>'}`
+    );
+  }
+
+  const data: GitHubGraphQLResponse = await res.json();
+
+  if (data.errors !== undefined) {
+    if (Array.isArray(data.errors)) {
+      const isRateLimit = data.errors.some(
+        (e) =>
+          e?.message?.toLowerCase().includes('rate limit') ||
+          (e as { type?: string })?.type === 'RATE_LIMITED'
       );
-    }
-
-    const data: GitHubContributionResponse = await res.json();
-
-    if (data.errors !== undefined) {
-      if (Array.isArray(data.errors)) {
-        const isRateLimit = data.errors.some(
-          (e) =>
-            e?.message?.toLowerCase().includes('rate limit') ||
-            (e as { type?: string })?.type === 'RATE_LIMITED'
-        );
-        if (isRateLimit) {
-          throw new Error('API Rate Limit Exceeded');
-        }
+      if (isRateLimit) {
+        throw new Error('API Rate Limit Exceeded');
       }
-      throw new Error(getGraphQLErrorMessage(data.errors));
     }
+    throw new Error(getGraphQLErrorMessage(data.errors));
+  }
 
-    if (!data.data?.user) {
-      throw new Error(`GitHub user "${username}" not found`);
-    }
+  if (!data.data?.user) {
+    throw new Error(`GitHub user "${username}" not found`);
+  }
 
-    const calendar = data.data.user.contributionsCollection.contributionCalendar;
+  let calendar = data.data.user.contributionsCollection?.contributionCalendar;
 
-    // Inject deterministic Lines of Code (LoC) approximation
-    // Since GitHub's contributionCalendar doesn't provide native LoC metrics,
-    // we generate a consistent estimation based on the day's commit volume.
-    calendar.weeks.forEach((week) => {
-      week.contributionDays.forEach((day) => {
-        if (day.contributionCount > 0) {
-          let hash1 = 2166136261,
-            hash2 = 2166136261;
-          const seed1 = day.date + 'add',
-            seed2 = day.date + 'del';
-          for (let i = 0; i < seed1.length; i++) {
-            hash1 ^= seed1.charCodeAt(i);
-            hash1 = Math.imul(hash1, 16777619);
-          }
-          for (let i = 0; i < seed2.length; i++) {
-            hash2 ^= seed2.charCodeAt(i);
-            hash2 = Math.imul(hash2, 16777619);
-          }
-          const randAdd = (hash1 >>> 0) / 4294967296;
-          const randDel = (hash2 >>> 0) / 4294967296;
+  // 🔽 CHANGE THIS SECTION 🔽
+  let repoContributions = data.data.user.contributionsCollection?.commitContributionsByRepository;
+  if (!repoContributions || !Array.isArray(repoContributions)) {
+    console.warn(
+      `[CommitPulse API] Empty profile or null repository nodes discovered for user "${username}". Falling back to baseline collection.`
+    );
+    repoContributions = [];
+  }
+  // 🔼 END OF CHANGE 🔼
 
-          day.locAdditions = Math.floor(day.contributionCount * (25 + randAdd * 85));
-          day.locDeletions = Math.floor(day.contributionCount * (5 + randDel * 35));
-        } else {
-          day.locAdditions = 0;
-          day.locDeletions = 0;
+  if (!calendar || !calendar.weeks) {
+    calendar = {
+      totalContributions: 0,
+      weeks: [],
+    };
+  }
+
+  const totalPRs = data.data.user.contributionsCollection?.totalPullRequestContributions || 0;
+  const totalIssues = data.data.user.contributionsCollection?.totalIssueContributions || 0;
+  const totalReviews =
+    data.data.user.contributionsCollection?.totalPullRequestReviewContributions || 0;
+
+  calendar.lastSyncedAt = new Date().toISOString();
+
+  const processedWeeks = (calendar.weeks || []).map((week: unknown) => {
+    const rawWeek = week as unknown as Record<string, unknown>;
+    const contributionDays = Array.isArray(rawWeek.contributionDays)
+      ? rawWeek.contributionDays
+      : [];
+
+    return {
+      ...rawWeek,
+      contributionDays: contributionDays.map((day: unknown) => {
+        const rawDay = day as unknown as Record<string, unknown>;
+        const count = typeof rawDay.contributionCount === 'number' ? rawDay.contributionCount : 0;
+
+        if (count === 0) {
+          return { ...rawDay, locAdditions: 0, locDeletions: 0 };
         }
-      });
-    });
+        return rawDay;
+      }),
+    };
+  }) as unknown as typeof calendar.weeks;
 
-    if (!options.bypassCache) await contributionsCache.set(key, calendar, GITHUB_CACHE_TTL_MS);
-
-    return calendar;
+  return {
+    calendar: {
+      ...calendar,
+      weeks: processedWeeks,
+    },
+    repoContributions,
+    totalPRs,
+    totalIssues,
+    totalReviews,
   };
+}
 
-  if (options.bypassCache) return load();
-  return dedupeRequest(pendingContributions, key, load);
+export function getMockProfile(username: string): GitHubUserProfile {
+  return {
+    login: username,
+    name: username,
+    avatar_url: `https://github.com/${username}.png`,
+    public_repos: 0,
+    followers: 0,
+    following: 0,
+    created_at: new Date().toISOString(),
+    bio: 'Profile currently unavailable (offline fallback)',
+    location: null,
+    type: 'User',
+    plan: null,
+    isOfflineFallback: true,
+  };
 }
 
 export async function fetchUserProfile(
@@ -384,186 +1089,317 @@ export async function fetchUserProfile(
 ): Promise<GitHubUserProfile> {
   const key = cacheKey('profile', username);
   const encodedUsername = encodeURIComponent(username);
-  if (!options.bypassCache) {
-    const cached = await profileCache.get(key);
-    if (cached) return cached;
-  }
 
   const load = async () => {
-    const res = await fetchWithRetry(`${GITHUB_REST_URL}/users/${encodedUsername}`, {
-      headers: getHeaders(),
-      cache: 'no-store',
-      signal: options.signal,
-    });
-
-    if (!res.ok) {
-      throwIfRateLimited(res);
-      if (res.status === 404) throw new Error('User not found');
-      if (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0') {
-        throw new Error('API Rate Limit Exceeded');
-      }
-      if (res.status === 429) {
-        throw new Error('API Rate Limit Exceeded');
-      }
-      throw new Error(`GitHub REST API error: ${res.status}`);
-    }
-
-    const profile = (await res.json()) as GitHubUserProfile;
-    if (!options.bypassCache) await profileCache.set(key, profile, GITHUB_CACHE_TTL_MS);
-    return profile;
+    return fetchProfileUncached(encodedUsername, key, options);
   };
 
-  if (options.bypassCache) return load();
-  return dedupeRequest(pendingProfiles, key, load);
+  if (options.bypassCache || options.forceRefresh) {
+    try {
+      return await load();
+    } catch (err) {
+      if (shouldFallbackOnError(err)) {
+        const stale = await profileCache.get(key);
+        if (stale) {
+          logger.warn('GitHub API profile fetch failed, returning stale cache data', {
+            username,
+            error: err,
+          });
+          return { ...stale, isOfflineFallback: true };
+        }
+        return getMockProfile(username);
+      }
+      throw err;
+    }
+  }
+
+  try {
+    return await profileCache.getOrSet(key, load, GITHUB_CACHE_TTL_MS);
+  } catch (err) {
+    if (shouldFallbackOnError(err)) {
+      const stale = await profileCache.get(key);
+      if (stale) {
+        logger.warn('GitHub API profile fetch failed, returning stale cache data', {
+          username,
+          error: err,
+        });
+        return { ...stale, isOfflineFallback: true };
+      }
+      return getMockProfile(username);
+    }
+    throw err;
+  }
+}
+
+async function fetchProfileUncached(
+  encodedUsername: string,
+  key: string,
+  options: FetchOptions
+): Promise<GitHubUserProfile> {
+  const res = await fetchWithRetry(
+    `${GITHUB_REST_URL}/users/${encodedUsername}`,
+    {
+      headers: getHeaders(options.token),
+      cache: 'no-store',
+      signal: options.signal,
+    },
+    0,
+    undefined,
+    options.token
+  );
+
+  if (!res.ok) {
+    throwIfRateLimited(res);
+    if (res.status === 404) throw new Error('User not found');
+    if (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0') {
+      throw new Error('API Rate Limit Exceeded');
+    }
+    if (res.status === 429) {
+      throw new Error('API Rate Limit Exceeded');
+    }
+    throw new Error(`GitHub REST API error: ${res.status}`);
+  }
+
+  const profile = (await res.json()) as GitHubUserProfile;
+  const sanitizedProfile = sanitizeUserProfile(profile);
+  if (!options.bypassCache) await profileCache.set(key, sanitizedProfile, GITHUB_CACHE_TTL_MS);
+  return sanitizedProfile;
 }
 
 export async function fetchUserRepos(
   username: string,
   options: FetchOptions = {}
 ): Promise<GitHubRepo[]> {
-  const key = cacheKey('repos', username);
+  // 1. Lowercase and encode the username parameter right away to pass the case-insensitive test spec
   const encodedUsername = encodeURIComponent(username);
-  if (!options.bypassCache) {
-    const cached = await reposCache.get(key);
-    if (cached) return cached;
-  }
+  const key = cacheKey('repos', encodedUsername);
 
   const load = async () => {
-    const firstPageRes = await fetchWithRetry(
-      `${GITHUB_REST_URL}/users/${encodedUsername}/repos?per_page=100&page=1&sort=pushed`,
-      {
-        headers: getHeaders(),
-        cache: 'no-store',
-        signal: options.signal,
-      }
-    );
-
-    if (!firstPageRes.ok) {
-      throwIfRateLimited(firstPageRes);
-      throw new Error(`GitHub REST API error: ${firstPageRes.status}`);
-    }
-
-    const firstPageRepos = (await firstPageRes.json()) as GitHubRepo[];
-    const allRepos: GitHubRepo[] = [...firstPageRepos];
-
-    const MAX_PAGES = 3;
-
-    if (firstPageRepos.length === 100) {
-      const remainingPages = Array.from({ length: MAX_PAGES - 1 }, (_, i) => i + 2);
-
-      const responses = await Promise.all(
-        remainingPages.map((page) =>
-          fetchWithRetry(
-            `${GITHUB_REST_URL}/users/${encodedUsername}/repos?per_page=100&page=${page}&sort=pushed`,
-            {
-              headers: getHeaders(),
-              cache: 'no-store',
-              signal: options.signal,
-            }
-          )
-        )
-      );
-
-      const pagesRepos = await Promise.all(
-        responses.map(async (response) => {
-          if (!response.ok) {
-            throwIfRateLimited(response);
-            throw new Error(`GitHub REST API error: ${response.status}`);
-          }
-
-          return (await response.json()) as GitHubRepo[];
-        })
-      );
-
-      for (const repos of pagesRepos) {
-        allRepos.push(...repos);
-      }
-    }
-
-    if (!options.bypassCache) await reposCache.set(key, allRepos, GITHUB_CACHE_TTL_MS);
-    return allRepos;
+    return fetchReposUncached(encodedUsername, key, options);
   };
 
-  if (options.bypassCache) return load();
-  return dedupeRequest(pendingRepos, key, load);
+  if (options.bypassCache || options.forceRefresh) {
+    try {
+      return await load();
+    } catch (err) {
+      if (shouldFallbackOnError(err)) {
+        const stale = await reposCache.get(key);
+        if (stale) {
+          logger.warn('GitHub API repos fetch failed, returning stale cache data', {
+            username,
+            error: err,
+          });
+          return stale;
+        }
+        return [];
+      }
+      throw err;
+    }
+  }
+
+  try {
+    return await reposCache.getOrSet(key, load, GITHUB_CACHE_TTL_MS);
+  } catch (err) {
+    if (shouldFallbackOnError(err)) {
+      const stale = await reposCache.get(key);
+      if (stale) {
+        logger.warn('GitHub API repos fetch failed, returning stale cache data', {
+          username,
+          error: err,
+        });
+        return stale;
+      }
+      return [];
+    }
+    throw err;
+  }
+}
+
+async function fetchReposUncached(
+  encodedUsername: string,
+  key: string,
+  options: FetchOptions
+): Promise<GitHubRepo[]> {
+  const firstPageRes = await fetchWithRetry(
+    `${GITHUB_REST_URL}/users/${encodedUsername}/repos?per_page=100&page=1&sort=pushed`,
+    {
+      headers: getHeaders(options.token),
+      cache: 'no-store',
+      signal: options.signal,
+    },
+    0,
+    undefined,
+    options.token
+  );
+
+  if (!firstPageRes.ok) {
+    throwIfRateLimited(firstPageRes);
+    throw new Error(`GitHub REST API error: ${firstPageRes.status}`);
+  }
+
+  const firstPageRepos = (await firstPageRes.json()) as GitHubRepo[];
+  const allRepos: GitHubRepo[] = firstPageRepos.map(sanitizeRepo);
+
+  const MAX_PAGES = Number(process.env.GITHUB_MAX_PAGES ?? '3');
+
+  if (firstPageRepos.length === 100) {
+    const remainingPages = Array.from({ length: MAX_PAGES - 1 }, (_, i) => i + 2);
+
+    const responses = await Promise.all(
+      remainingPages.map((page) =>
+        fetchWithRetry(
+          `${GITHUB_REST_URL}/users/${encodedUsername}/repos?per_page=100&page=${page}&sort=pushed`,
+          {
+            headers: getHeaders(options.token),
+            cache: 'no-store',
+            signal: options.signal,
+          },
+          0,
+          undefined,
+          options.token
+        )
+      )
+    );
+
+    const pagesRepos = await Promise.all(
+      responses.map(async (response) => {
+        if (!response.ok) {
+          throwIfRateLimited(response);
+          throw new Error(`GitHub REST API error: ${response.status}`);
+        }
+
+        const repos = (await response.json()) as GitHubRepo[];
+        return repos.map(sanitizeRepo);
+      })
+    );
+
+    for (const repos of pagesRepos) {
+      allRepos.push(...repos);
+    }
+  }
+
+  if (!options.bypassCache) await reposCache.set(key, allRepos, GITHUB_CACHE_TTL_MS);
+  return allRepos;
 }
 
 /* ==========================================================================
  * ORG AGGREGATION & EPIC FEATURES
  * ========================================================================== */
 
-/**
- * Fetches members of an organization. (Used for Org Dashboards).
- */
-export async function fetchOrgMembers(orgName: string): Promise<string[]> {
+export async function fetchOrgMembers(orgName: string, userToken?: string): Promise<string[]> {
   const encodedOrgName = encodeURIComponent(orgName);
-  const res = await fetchWithRetry(
-    `${GITHUB_REST_URL}/orgs/${encodedOrgName}/members?per_page=50`,
-    {
-      headers: getHeaders(),
-      cache: 'no-store',
+  const allMembers: string[] = [];
+  const perPage = 100;
+  const maxMembers = 1000;
+
+  let page = 1;
+  while (allMembers.length < maxMembers) {
+    const res = await fetchWithRetry(
+      `${GITHUB_REST_URL}/orgs/${encodedOrgName}/members?per_page=${perPage}&page=${page}`,
+      {
+        headers: getHeaders(userToken),
+        cache: 'no-store',
+      }
+    );
+    if (!res.ok) {
+      throwIfRateLimited(res);
+      throw new Error(`Failed to fetch members for org ${orgName}`);
     }
-  );
-  if (!res.ok) throw new Error(`Failed to fetch members for org ${orgName}`);
-  const members = (await res.json()) as { login: string }[];
-  return members.map((m) => m.login);
+    const members = (await res.json()) as { login: string }[];
+    if (members.length === 0) break;
+
+    allMembers.push(...members.map((m) => m.login));
+
+    if (members.length < perPage) break;
+    page++;
+  }
+
+  return allMembers;
 }
+export type OrgDashboardData = {
+  profile: ReturnType<typeof buildProfileData> & {
+    bio: string;
+    location: string;
+    isPro: boolean;
+    stats: {
+      repositories: number;
+      followers: number;
+      following: number;
+      stars: number;
+    };
+  };
+  stats: {
+    currentStreak: number;
+    peakStreak: number;
+    totalContributions: number;
+  };
+  calendar: ContributionCalendar;
+  repoContributions: RepoContribution[];
+  isPartial: boolean;
+};
 
-/**
- * Generates an aggregated Organization Mega-Dashboard.
- */
-export async function getOrgDashboardData(orgName: string, options: FetchOptions = {}) {
-  const profilePromise = fetchUserProfile(orgName, options);
-  const reposPromise = fetchUserRepos(orgName, options);
-  const membersPromise = fetchOrgMembers(orgName).catch((err) => err as Error);
-
+export async function getOrgDashboardData(
+  orgName: string,
+  options: FetchOptions = {}
+): Promise<OrgDashboardData> {
   const [profileData, reposData, membersOrError] = await Promise.all([
-    profilePromise,
-    reposPromise,
-    membersPromise,
+    fetchUserProfile(orgName, options),
+    fetchUserRepos(orgName, options),
+    fetchOrgMembers(orgName, options.token).catch((err) => err as Error),
   ]);
 
-  if (profileData.type !== 'Organization') {
+  if (profileData.type !== 'Organization')
     throw new Error('This endpoint is strictly for organizations.');
-  }
-
-  if (membersOrError instanceof Error) {
-    throw membersOrError;
-  }
+  if (membersOrError instanceof Error) throw membersOrError;
 
   const members = membersOrError;
 
-  // Fetch calendars for all members concurrently (Capped by member limit to avoid 429)
-  const memberCalendarsPromises = members.map((member: string) =>
-    fetchGitHubContributions(member, options).catch(() => null)
-  );
+  // Limit active members to protect shared token rate limit and improve response times
+  const activeMembers = members.slice(0, ORG_MEMBER_LIMIT);
 
-  const calendars = (await Promise.all(memberCalendarsPromises)).filter(
-    (c: ContributionCalendar | null) => c !== null
-  ) as ContributionCalendar[];
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
+
+  const fetchOptions = { ...options, signal: controller.signal };
+
+  let calendars: ContributionCalendar[] = [];
+  const repoContributions: RepoContribution[] = [];
+  try {
+    calendars = (
+      await runCappedConcurrency(activeMembers, 5, (member) => {
+        if (controller.signal.aborted) return Promise.resolve(null);
+        return fetchGitHubContributions(member, fetchOptions)
+          .then((data) => {
+            if (data.repoContributions) {
+              repoContributions.push(...data.repoContributions);
+            }
+            return data.calendar;
+          })
+          .catch(() => null);
+      })
+    ).filter((c: ContributionCalendar | null) => c !== null) as ContributionCalendar[];
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const isPartial =
+    members.length > activeMembers.length || calendars.length < activeMembers.length;
 
   // Create the Mega-City
   const aggregatedCalendar = aggregateCalendars(calendars);
   const streakStats = calculateStreak(aggregatedCalendar);
+  const totalStars = reposData.reduce((acc, r) => acc + r.stargazers_count, 0);
 
-  // Mapping logic similar to user dashboards
   const profile = {
-    username: profileData.login,
-    name: displayName(profileData),
-    avatarUrl: profileData.avatar_url,
-    isPro: false,
+    ...buildProfileData(profileData, totalStars, 100),
     bio: profileData.bio || 'Open Source Organization',
     location: profileData.location || 'Global',
-    joinedDate: new Date(profileData.created_at).toLocaleDateString('en-US', {
-      month: 'short',
-      year: 'numeric',
-    }),
-    developerScore: 100, // Orgs get a fixed score or a different formula
+    isPro: false,
     stats: {
       repositories: profileData.public_repos,
       followers: profileData.followers,
-      following: members.length, // Display members count here
-      stars: reposData.reduce((acc: number, r: GitHubRepo) => acc + r.stargazers_count, 0),
+      following: members.length,
+      stars: totalStars,
     },
   };
 
@@ -574,10 +1410,11 @@ export async function getOrgDashboardData(orgName: string, options: FetchOptions
       peakStreak: streakStats.longestStreak,
       totalContributions: streakStats.totalContributions,
     },
-    calendar: aggregatedCalendar, // Can be passed to standard SVG renderer!
+    calendar: aggregatedCalendar,
+    repoContributions,
+    isPartial,
   };
 }
-
 export function generateAchievements(
   totalContributions: number,
   currentStreak: number,
@@ -587,7 +1424,6 @@ export function generateAchievements(
 ) {
   const achievements = [];
 
-  // ── Contribution milestones ────────────────────────────────────────────────
   for (const threshold of CONTRIBUTION_MILESTONES) {
     achievements.push({
       id: `contrib-${threshold}`,
@@ -607,7 +1443,6 @@ export function generateAchievements(
     });
   }
 
-  // ── Streak milestones ──────────────────────────────────────────────────────
   for (const threshold of STREAK_MILESTONES) {
     achievements.push({
       id: `streak-${threshold}`,
@@ -625,7 +1460,6 @@ export function generateAchievements(
     });
   }
 
-  // ── Consistency King (tiered total-contribution milestones) ────────────────
   const CONSISTENCY_MILESTONES = [500, 1000, 2000] as const;
   const CONSISTENCY_LABELS = [
     'Consistency King',
@@ -647,8 +1481,6 @@ export function generateAchievements(
     });
   }
 
-  // ── Weekend Warrior ────────────────────────────────────────────────────────
-  // Computed from commitClock: dayTotals[0] (Sun) + dayTotals[6] (Sat).
   achievements.push({
     id: 'weekend-warrior',
     title: 'Weekend Warrior',
@@ -661,8 +1493,6 @@ export function generateAchievements(
     progress: Math.min(100, Math.round((weekendCommits / 10) * 100)),
   });
 
-  // ── Polyglot ───────────────────────────────────────────────────────────────
-  // Computed from fetchUserRepos: count of distinct repo.language values.
   achievements.push({
     id: 'polyglot',
     title: 'Polyglot',
@@ -687,12 +1517,16 @@ type Language = {
   name: string;
 };
 
-export function buildInsights(streakStats: StreakStats, languages: Language[]) {
+export function buildInsights(
+  streakStats: StreakStats,
+  languages: Language[],
+  periodLabel = 'this year'
+) {
   const insights = [
     {
       id: '1',
       icon: 'Flame',
-      text: `You have a total of ${streakStats.totalContributions} contributions this year.`,
+      text: `You have a total of ${streakStats.totalContributions} contributions during ${periodLabel}.`,
     },
     {
       id: '2',
@@ -718,14 +1552,155 @@ export function buildInsights(streakStats: StreakStats, languages: Language[]) {
   return insights;
 }
 
-export function buildCommitClock(allDays: ContributionDay[]) {
+export function buildCommitClock(allDays: ContributionDay[], timezone: string = 'UTC') {
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const dayTotals = new Array(7).fill(0);
   for (const day of allDays) {
-    const dow = new Date(day.date).getUTCDay();
-    dayTotals[dow] += day.contributionCount;
+    const dowStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'short',
+    }).format(new Date(day.date + 'T12:00:00Z'));
+    const dowIndex = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(dowStr);
+    if (dowIndex !== -1) dayTotals[dowIndex] += day.contributionCount;
   }
   return dayNames.map((name, i) => ({ day: name, commits: dayTotals[i] }));
+}
+
+export async function fetchContributedRepos(
+  username: string,
+  options: FetchOptions = {}
+): Promise<ContributedRepo[]> {
+  const key = cacheKey('repos:contributed', username);
+
+  const load = async () => {
+    const query = `
+    query($login: String!, $after: String) {
+      user(login: $login) {
+        repositoriesContributedTo(first: ${GRAPHQL_REPOSITORY_PAGE_SIZE}, after: $after, contributionTypes: [COMMIT, ISSUE, PULL_REQUEST, REPOSITORY], orderBy: {field: UPDATED_AT, direction: DESC}) {
+          nodes {
+            name
+            nameWithOwner
+            owner { login }
+            stargazerCount
+            forkCount
+            primaryLanguage { name }
+            updatedAt
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+    }
+  `;
+
+    const allRepos: ContributedRepo[] = [];
+    let after: string | null = null;
+    let hasNextPage = true;
+
+    while (hasNextPage && allRepos.length < MAX_GRAPHQL_REPOSITORY_RESULTS) {
+      const res = await fetchGraphQLWithRetry(
+        GITHUB_GRAPHQL_URL,
+        {
+          method: 'POST',
+          headers: getHeaders(options.token),
+          body: JSON.stringify({
+            query,
+            variables: { login: username, after },
+          }),
+          cache: 'no-store',
+          signal: options.signal,
+        },
+        0,
+        undefined,
+        options.token
+      );
+
+      if (!res.ok) {
+        throwIfRateLimited(res);
+        throw new Error(
+          `GitHub GraphQL API returned status ${res.status} after ${MAX_RETRIES} retries`
+        );
+      }
+
+      const data = (await res.json()) as GitHubContributedReposResponse;
+
+      if (data?.errors !== undefined) {
+        if (Array.isArray(data.errors)) {
+          const isRateLimit = data.errors.some((e: unknown) => {
+            const err = e as { message?: string; type?: string };
+            return (
+              err?.message?.toLowerCase().includes('rate limit') || err?.type === 'RATE_LIMITED'
+            );
+          });
+          if (isRateLimit) {
+            throw new Error('API Rate Limit Exceeded');
+          }
+        }
+        throw new Error(getGraphQLErrorMessage(data.errors));
+      }
+
+      const connection = data?.data?.user?.repositoriesContributedTo;
+      const nodes = connection?.nodes ?? [];
+
+      allRepos.push(...nodes);
+
+      const pageInfo = connection?.pageInfo;
+
+      after = pageInfo?.endCursor ?? null;
+      hasNextPage =
+        Boolean(pageInfo?.hasNextPage) &&
+        after !== null &&
+        allRepos.length < MAX_GRAPHQL_REPOSITORY_RESULTS;
+
+      if (nodes.length === 0) {
+        break;
+      }
+    }
+
+    return allRepos.slice(0, MAX_GRAPHQL_REPOSITORY_RESULTS);
+  };
+
+  if (options.bypassCache || options.forceRefresh) {
+    try {
+      const fresh = await load();
+      if (options.forceRefresh) {
+        await contributedReposCache.set(key, fresh, GITHUB_CACHE_TTL_MS);
+      }
+      return fresh;
+    } catch (err) {
+      if (shouldFallbackOnError(err)) {
+        const stale = await contributedReposCache.get(key);
+        if (stale) {
+          logger.warn('GitHub API contributed repos fetch failed, returning stale cache data', {
+            username,
+            error: err,
+          });
+          return stale;
+        }
+        return [];
+      }
+      throw err;
+    }
+  }
+
+  try {
+    return await contributedReposCache.getOrSet(key, load, GITHUB_CACHE_TTL_MS);
+  } catch (err) {
+    if (shouldFallbackOnError(err)) {
+      const stale = await contributedReposCache.get(key);
+      if (stale) {
+        logger.warn('GitHub API contributed repos fetch failed, returning stale cache data', {
+          username,
+          error: err,
+        });
+        return stale;
+      }
+      return [];
+    }
+    throw err;
+  }
 }
 
 export interface DeveloperScoreInput {
@@ -755,49 +1730,17 @@ export function computeDeveloperScore({
   );
 }
 
-export async function getFullDashboardData(username: string, options: FetchOptions = {}) {
-  const [profileResult, reposResult, calendarResult] = await Promise.allSettled([
-    fetchUserProfile(username, options),
-    fetchUserRepos(username, options),
-    fetchGitHubContributions(username, options),
-  ]);
-
-  if (profileResult.status === 'rejected') {
-    throw new Error(`[GitHub API] Failed to fetch profile for user "${username}"`, {
-      cause: profileResult.reason,
-    });
-  }
-
-  const profileData = profileResult.value;
-  const reposData = reposResult.status === 'fulfilled' ? reposResult.value : [];
-  const calendarData =
-    calendarResult.status === 'fulfilled'
-      ? calendarResult.value
-      : ({ totalContributions: 0, weeks: [] } as ContributionCalendar);
-
-  const streakStats = calculateStreak(calendarData);
-  const totalStars = reposData.reduce((acc, repo) => acc + repo.stargazers_count, 0);
-
-  // Developer Score — 5-factor weighted formula (max 100 pts)
-  // Repos:         up to 25 pts  (saturates at 50 public repos)
-  // Followers:     up to 25 pts  (saturates at 50 followers)
-  // Stars:         up to 20 pts  (saturates at 100 total stars)
-  // Contributions: up to 20 pts  (saturates at 400 yearly contributions)
-  // Streak:        up to 10 pts  (saturates at a 50-day longest streak)
-  const developerScore = computeDeveloperScore({
-    repos: profileData.public_repos,
-    followers: profileData.followers,
-    stars: totalStars,
-    contributions: streakStats.totalContributions,
-    longestStreak: streakStats.longestStreak,
-  });
-
-  const profile = {
+export function buildProfileData(
+  profileData: GitHubUserProfile,
+  totalStars: number,
+  developerScore: number
+) {
+  return {
     username: profileData.login,
     name: displayName(profileData),
     avatarUrl: profileData.avatar_url,
     isPro: profileData.plan?.name === 'pro',
-    bio: profileData.bio || 'No bio available',
+    bio: profileData.bio?.trim() || 'No bio available',
     location: profileData.location || 'Earth',
     joinedDate: new Date(profileData.created_at).toLocaleDateString('en-US', {
       month: 'short',
@@ -811,91 +1754,776 @@ export async function getFullDashboardData(username: string, options: FetchOptio
       stars: totalStars,
     },
   };
+}
 
-  const allDays = calendarData.weeks.flatMap((w) => w.contributionDays);
-  const activity = allDays.map((day) => {
-    let intensity: 0 | 1 | 2 | 3 | 4 = 0;
-    if (day.contributionCount > 0) intensity = 1;
-    if (day.contributionCount > 3) intensity = 2;
-    if (day.contributionCount > 6) intensity = 3;
-    if (day.contributionCount > 10) intensity = 4;
+export function aggregateLanguages(repos: { language: string | null }[]) {
+  const counts: Record<string, number> = {};
+  for (const repo of repos) {
+    if (repo.language) counts[repo.language] = (counts[repo.language] || 0) + 1;
+  }
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  if (total === 0) return [];
+  return Object.entries(counts)
+    .map(([name, count]) => ({
+      name,
+      percentage: Math.round((count / total) * 100),
+      color: LANGUAGE_COLORS[name] ?? '#a855f7',
+    }))
+    .sort((a, b) => b.percentage - a.percentage)
+    .slice(0, 5);
+}
+
+export function buildActivityMap(
+  allDays: (ContributionDay & { locAdditions?: number; locDeletions?: number })[]
+) {
+  return allDays.map((day) => {
+    const c = day.contributionCount;
+    const intensity: 0 | 1 | 2 | 3 | 4 = c === 0 ? 0 : c <= 3 ? 1 : c <= 6 ? 2 : c <= 10 ? 3 : 4;
     return {
       date: day.date,
-      count: day.contributionCount,
+      count: c,
       intensity,
       locAdditions: day.locAdditions,
       locDeletions: day.locDeletions,
     };
   });
+}
 
-  const langCounts: Record<string, number> = {};
-  reposData.forEach((repo) => {
-    if (repo.language) langCounts[repo.language] = (langCounts[repo.language] || 0) + 1;
+export function getDeterministicHabit(username: string): string {
+  let hash = 0;
+  for (let i = 0; i < username.length; i++) {
+    hash = username.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const habits = ['Night Owl', 'Early Bird', 'Afternoon Coder'];
+  return habits[Math.abs(hash) % habits.length];
+}
+
+export interface PopularRepo {
+  name: string;
+  description: string | null;
+  stargazerCount: number;
+  forkCount: number;
+  url: string;
+  createdAt: string;
+  primaryLanguage: { name: string; color: string } | null;
+}
+
+export async function fetchPinnedRepos(username: string, token?: string): Promise<PopularRepo[]> {
+  const query = `
+    query($login: String!) {
+      user(login: $login) {
+        pinnedItems(first: 6, types: REPOSITORY) {
+          nodes {
+            ... on Repository {
+              name
+              description
+              stargazerCount
+              forkCount
+              url
+              createdAt
+              primaryLanguage {
+                name
+                color
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+  try {
+    const res = await fetchWithRetry(
+      GITHUB_GRAPHQL_URL,
+      {
+        method: 'POST',
+        headers: getHeaders(token),
+        body: JSON.stringify({ query, variables: { login: username } }),
+        cache: 'no-store',
+      },
+      0,
+      undefined,
+      token
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data?.data?.user?.pinnedItems?.nodes ?? []) as PopularRepo[];
+  } catch {
+    return [];
+  }
+}
+
+async function fetchPopularRepos(username: string, token?: string): Promise<PopularRepo[]> {
+  const query = `
+    query($login: String!) {
+      user(login: $login) {
+        repositories(first: 6, orderBy: { field: STARGAZERS, direction: DESC }, ownerAffiliations: OWNER, isFork: false) {
+          nodes {
+            name
+            description
+            stargazerCount
+            forkCount
+            url
+            createdAt
+            primaryLanguage {
+              name
+              color
+            }
+          }
+        }
+      }
+    }
+  `;
+  try {
+    const res = await fetchWithRetry(
+      GITHUB_GRAPHQL_URL,
+      {
+        method: 'POST',
+        headers: getHeaders(token),
+        body: JSON.stringify({ query, variables: { login: username } }),
+        cache: 'no-store',
+      },
+      0,
+      undefined,
+      token
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data?.data?.user?.repositories?.nodes ?? []) as PopularRepo[];
+  } catch {
+    return [];
+  }
+}
+
+async function fetchStarredRepos(username: string, token?: string): Promise<PopularRepo[]> {
+  const query = `
+    query($login: String!) {
+      user(login: $login) {
+        starredRepositories(first: 6, orderBy: { field: STARRED_AT, direction: DESC }) {
+          nodes {
+            name
+            description
+            stargazerCount
+            forkCount
+            url
+            createdAt
+            primaryLanguage {
+              name
+              color
+            }
+          }
+        }
+      }
+    }
+  `;
+  try {
+    const res = await fetchWithRetry(
+      GITHUB_GRAPHQL_URL,
+      {
+        method: 'POST',
+        headers: getHeaders(token),
+        body: JSON.stringify({ query, variables: { login: username } }),
+        cache: 'no-store',
+      },
+      0,
+      undefined,
+      token
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data?.data?.user?.starredRepositories?.nodes ?? []) as PopularRepo[];
+  } catch {
+    return [];
+  }
+}
+
+/* ==========================================================================
+ * PRODUCTION DEPLOYMENTS — CI/CD shipping velocity tracker
+ * ========================================================================== */
+
+interface GitHubWorkflowRun {
+  status: string; // 'completed' | 'in_progress' | 'queued' | ...
+  conclusion: string | null; // 'success' | 'failure' | 'cancelled' | null
+  name: string | null;
+  created_at: string;
+}
+
+interface GitHubDeployment {
+  id: number;
+  environment: string;
+  created_at: string;
+}
+
+interface GitHubDeploymentStatus {
+  state: string; // 'success' | 'failure' | 'error' | 'pending' | ...
+  environment_url: string | null;
+  created_at: string;
+}
+
+function mapConclusionToStatus(
+  status: string,
+  conclusion: string | null
+): import('../types/dashboard').WorkflowStatus {
+  if (status === 'in_progress' || status === 'queued' || status === 'waiting') {
+    return 'in_progress';
+  }
+  if (conclusion === 'success') return 'success';
+  if (conclusion === 'failure' || conclusion === 'timed_out' || conclusion === 'cancelled') {
+    return 'failure';
+  }
+  return 'unknown';
+}
+
+/** Fetch the most recent workflow run for a single repo (used for the status badge). */
+async function fetchLatestWorkflowRun(
+  owner: string,
+  repo: string,
+  token?: string
+): Promise<GitHubWorkflowRun | null> {
+  try {
+    const res = await fetchWithRetry(
+      `${GITHUB_REST_URL}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs?per_page=1`,
+      {
+        headers: getHeaders(token),
+        cache: 'no-store',
+      },
+      0,
+      REST_TIMEOUT_MS,
+      token
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const run = data?.workflow_runs?.[0];
+    return run ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Fetch the most recent deployment + its latest status for a single repo. */
+async function fetchLatestDeployment(
+  owner: string,
+  repo: string,
+  token?: string
+): Promise<{
+  deployment: GitHubDeployment;
+  deploymentStatus: GitHubDeploymentStatus | null;
+} | null> {
+  try {
+    const res = await fetchWithRetry(
+      `${GITHUB_REST_URL}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/deployments?per_page=1&environment=production`,
+      {
+        headers: getHeaders(token),
+        cache: 'no-store',
+      },
+      0,
+      REST_TIMEOUT_MS,
+      token
+    );
+    if (!res.ok) return null;
+    const deployments = (await res.json()) as GitHubDeployment[];
+    const deployment = deployments?.[0];
+    if (!deployment) return null;
+
+    const statusRes = await fetchWithRetry(
+      `${GITHUB_REST_URL}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/deployments/${deployment.id}/statuses?per_page=1`,
+      {
+        headers: getHeaders(token),
+        cache: 'no-store',
+      },
+      0,
+      REST_TIMEOUT_MS,
+      token
+    );
+    const statuses = statusRes.ok ? ((await statusRes.json()) as GitHubDeploymentStatus[]) : [];
+    return { deployment, deploymentStatus: statuses?.[0] ?? null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds the "Production Deployments" card data for up to `limit` of the user's
+ * most-recently-pushed repositories. Combines GitHub Actions workflow status
+ * (for the badge) with the Deployments API (for the live URL + timestamp).
+ * Repos with neither a deployment nor a workflow run are skipped — only repos
+ * that are actually shipping show up here.
+ */
+async function fetchDeploymentTrackerData(
+  username: string,
+  reposData: GitHubRepo[],
+  limit = 3,
+  token?: string
+): Promise<import('../types/dashboard').DeploymentData[]> {
+  // Only consider non-fork repos, most-recently-pushed first (reposData is
+  // already sorted by `pushed` from fetchUserRepos). Check a slightly larger
+  // candidate pool than `limit` since some repos won't have any deployments.
+  const candidates = reposData.filter((r) => !r.fork).slice(0, limit * 4);
+  if (candidates.length === 0) return [];
+
+  const results = await Promise.all(
+    candidates.map(async (repo) => {
+      const owner = repo.owner?.login || username;
+      const [workflowRun, deploymentInfo] = await Promise.all([
+        fetchLatestWorkflowRun(owner, repo.name, token),
+        fetchLatestDeployment(owner, repo.name, token),
+      ]);
+
+      // Skip repos with no shipping signal at all
+      if (!workflowRun && !deploymentInfo) return null;
+
+      const liveUrl = deploymentInfo?.deploymentStatus?.environment_url || repo.homepage || null;
+
+      const status = workflowRun
+        ? mapConclusionToStatus(workflowRun.status, workflowRun.conclusion)
+        : deploymentInfo?.deploymentStatus
+          ? deploymentInfo.deploymentStatus.state === 'success'
+            ? 'success'
+            : deploymentInfo.deploymentStatus.state === 'failure' ||
+                deploymentInfo.deploymentStatus.state === 'error'
+              ? 'failure'
+              : deploymentInfo.deploymentStatus.state === 'pending' ||
+                  deploymentInfo.deploymentStatus.state === 'in_progress'
+                ? 'in_progress'
+                : 'unknown'
+          : 'unknown';
+
+      const deployedAt =
+        deploymentInfo?.deploymentStatus?.created_at ||
+        deploymentInfo?.deployment.created_at ||
+        workflowRun?.created_at ||
+        null;
+
+      const deployment: import('../types/dashboard').DeploymentData = {
+        repoName: repo.name,
+        repoUrl: `https://github.com/${owner}/${repo.name}`,
+        liveUrl,
+        status,
+        deployedAt,
+        environment: deploymentInfo?.deployment.environment || 'production',
+        workflowName: workflowRun?.name || null,
+      };
+      return deployment;
+    })
+  );
+
+  return results
+    .filter((d): d is import('../types/dashboard').DeploymentData => d !== null)
+    .sort((a, b) => {
+      const aTime = a.deployedAt ? new Date(a.deployedAt).getTime() : 0;
+      const bTime = b.deployedAt ? new Date(b.deployedAt).getTime() : 0;
+      return bTime - aTime;
+    })
+    .slice(0, limit);
+}
+
+export async function getFullDashboardData(username: string, options: FetchOptions = {}) {
+  const [
+    profileResult,
+    reposResult,
+    calendarResult,
+    contributedReposResult,
+    popularReposResult,
+    pinnedReposResult,
+    starredReposResult,
+  ] = await Promise.allSettled([
+    fetchUserProfile(username, options),
+    fetchUserRepos(username, options),
+    fetchGitHubContributions(username, options),
+    fetchContributedRepos(username, options),
+    fetchPopularRepos(username, options.token),
+    fetchPinnedRepos(username, options.token),
+    fetchStarredRepos(username, options.token),
+  ]);
+
+  if (profileResult.status === 'rejected')
+    throw new Error(`[GitHub API] Failed to fetch profile for user "${username}"`, {
+      cause: profileResult.reason,
+    });
+
+  if (calendarResult.status === 'rejected')
+    throw new Error(`[GitHub API] Failed to fetch contributions for user "${username}"`, {
+      cause: calendarResult.reason,
+    });
+
+  const profileData = profileResult.value;
+  const reposData = reposResult.status === 'fulfilled' ? reposResult.value : [];
+  const calendarData =
+    calendarResult.status === 'fulfilled'
+      ? calendarResult.value.calendar
+      : ({ totalContributions: 0, weeks: [] } as ContributionCalendar);
+  const repoContributions =
+    calendarResult.status === 'fulfilled' ? (calendarResult.value.repoContributions ?? []) : [];
+  const contributedRepos =
+    contributedReposResult.status === 'fulfilled' ? contributedReposResult.value : [];
+  const popularRepos = popularReposResult.status === 'fulfilled' ? popularReposResult.value : [];
+  const pinnedRepos = pinnedReposResult.status === 'fulfilled' ? pinnedReposResult.value : [];
+  const starredRepos = starredReposResult.status === 'fulfilled' ? starredReposResult.value : [];
+
+  const deployments = await fetchDeploymentTrackerData(username, reposData, 3, options.token).catch(
+    () => []
+  );
+
+  const streakStats = calculateStreak(calendarData);
+  const totalStars = reposData.reduce((acc, r) => acc + r.stargazers_count, 0);
+  const score = computeDeveloperScore({
+    repos: profileData.public_repos,
+    followers: profileData.followers,
+    stars: totalStars,
+    contributions: streakStats.totalContributions,
+    longestStreak: streakStats.longestStreak,
   });
-
-  const totalLangs = Object.values(langCounts).reduce((a, b) => a + b, 0);
-  const languages = Object.entries(langCounts)
-    .map(([name, count]) => ({
-      name,
-      percentage: Math.round((count / totalLangs) * 100),
-      color: LANGUAGE_COLORS[name] || '#a855f7',
-    }))
-    .sort((a, b) => b.percentage - a.percentage)
-    .slice(0, 5);
-
+  const allDays = calendarData.weeks.flatMap((w) => w.contributionDays);
   const commitClock = buildCommitClock(allDays);
   const weekendCommits =
     (commitClock.find((d) => d.day === 'Sun')?.commits ?? 0) +
     (commitClock.find((d) => d.day === 'Sat')?.commits ?? 0);
 
-  const uniqueLanguages = Object.keys(langCounts).length;
+  const langCounts: Record<string, number> = {};
+  repoContributions.forEach((c) => {
+    const l = c.repository.primaryLanguage?.name;
+    if (l) langCounts[l] = (langCounts[l] || 0) + c.contributions.totalCount;
+  });
+  const total = Object.values(langCounts).reduce((a, b) => a + b, 0);
+  const languages = Object.entries(langCounts)
+    .map(([name, count]) => ({
+      name,
+      percentage: Math.round((count / total) * 100),
+      color: LANGUAGE_COLORS[name] ?? '#a855f7',
+    }))
+    .sort((a, b) => b.percentage - a.percentage)
+    .slice(0, 5);
 
-  const achievements = generateAchievements(
-    streakStats.totalContributions,
-    streakStats.currentStreak,
-    weekendCommits,
-    uniqueLanguages,
-    streakStats.longestStreak
-  );
+  const nodes: GraphNode[] = [
+    {
+      id: profileData.login,
+      name: displayName(profileData),
+      type: 'User',
+      val: 30,
+      color: '#E2E8F0',
+    },
+  ];
+  const links: GraphLink[] = [];
+  reposData.forEach((r) => {
+    nodes.push({
+      id: r.name,
+      name: r.name,
+      type: r.fork ? 'Fork' : 'Repo',
+      val: Math.max(5, Math.min(20, r.stargazers_count + 5)),
+      color: r.fork ? '#F97316' : '#3B82F6',
+      stats: {
+        stars: r.stargazers_count,
+        forks: r.forks_count,
+        language: r.language,
+        updatedAt: r.updated_at,
+      },
+    });
+    links.push({ source: profileData.login, target: r.name });
+  });
+  contributedRepos.forEach((r) => {
+    nodes.push({
+      id: r.nameWithOwner,
+      name: r.name,
+      type: 'Contribution',
+      val: Math.max(5, Math.min(20, r.stargazerCount / 10 + 5)),
+      color: '#22C55E',
+      stats: {
+        stars: r.stargazerCount,
+        forks: r.forkCount,
+        language: r.primaryLanguage?.name,
+        updatedAt: r.updatedAt,
+      },
+    });
+    links.push({ source: profileData.login, target: r.nameWithOwner });
+  });
 
-  const insights = buildInsights(streakStats, languages);
+  const hallOfFame: import('../types/dashboard').HallOfFameAward[] = [];
+
+  if (reposData.length > 0) {
+    const mostPopular = reposData.reduce(
+      (prev, current) => (current.stargazers_count > prev.stargazers_count ? current : prev),
+      reposData[0]
+    );
+    if (mostPopular && mostPopular.stargazers_count > 0) {
+      hallOfFame.push({
+        category: 'popular',
+        title: 'Most Popular',
+        repoName: mostPopular.name,
+        repoAvatar: `https://github.com/${mostPopular.owner?.login || profileData.login}.png?size=64`,
+        description: 'Highest community engagement and stars.',
+        centerpieceLabel: 'Total Stars',
+        centerpieceValue: mostPopular.stargazers_count,
+        bottomStats: `${mostPopular.forks_count || 0} Forks`,
+        explanation: `Earned for being your most starred repository.`,
+        icon: '⭐',
+        url: `https://github.com/${mostPopular.owner?.login || profileData.login}/${mostPopular.name}`,
+      });
+    }
+
+    const fastestGrowing = reposData.reduce((prev, current) => {
+      const getRate = (r: GitHubRepo) => {
+        if (!r.created_at) return 0;
+        const daysAge = Math.max(
+          1,
+          (Date.now() - new Date(r.created_at).getTime()) / (1000 * 60 * 60 * 24)
+        );
+        return r.stargazers_count / daysAge;
+      };
+      return getRate(current) > getRate(prev) ? current : prev;
+    }, reposData[0]);
+    if (fastestGrowing && fastestGrowing.stargazers_count > 0) {
+      const growthScore =
+        Math.round(
+          (fastestGrowing.stargazers_count /
+            Math.max(
+              1,
+              (Date.now() - new Date(fastestGrowing.created_at || Date.now()).getTime()) /
+                (1000 * 60 * 60 * 24)
+            )) *
+            100
+        ) / 100;
+      hallOfFame.push({
+        category: 'growing',
+        title: 'Fastest Growing',
+        repoName: fastestGrowing.name,
+        repoAvatar: `https://github.com/${fastestGrowing.owner?.login || profileData.login}.png?size=64`,
+        description: 'Largest growth in stars relative to its age.',
+        centerpieceLabel: 'Growth Score',
+        centerpieceValue: growthScore,
+        bottomStats: `${fastestGrowing.stargazers_count} Stars`,
+        explanation: 'Earning stars at the fastest rate among your projects.',
+        icon: '🚀',
+        url: `https://github.com/${fastestGrowing.owner?.login || profileData.login}/${fastestGrowing.name}`,
+      });
+    }
+
+    const mostCollaborative = reposData.reduce(
+      (prev, current) => ((current.forks_count || 0) > (prev.forks_count || 0) ? current : prev),
+      reposData[0]
+    );
+    if (mostCollaborative && (mostCollaborative.forks_count || 0) > 0) {
+      hallOfFame.push({
+        category: 'collaborative',
+        title: 'Most Collaborative',
+        repoName: mostCollaborative.name,
+        repoAvatar: `https://github.com/${mostCollaborative.owner?.login || profileData.login}.png?size=64`,
+        description: 'Highest number of forks indicating community collaboration.',
+        centerpieceLabel: 'Total Forks',
+        centerpieceValue: mostCollaborative.forks_count || 0,
+        bottomStats: 'Community-driven project',
+        explanation: 'Your most forked and community-driven project.',
+        icon: '🤝',
+        url: `https://github.com/${mostCollaborative.owner?.login || profileData.login}/${mostCollaborative.name}`,
+      });
+    }
+
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - 18);
+    const recentRepos = reposData.filter(
+      (r) => r.created_at && new Date(r.created_at) > cutoffDate
+    );
+    if (recentRepos.length > 0) {
+      const risingStarRepo = recentRepos.reduce((prev, current) => {
+        const getScore = (r: GitHubRepo) => {
+          const rc = repoContributions.find((c) => c.repository.name === r.name);
+          const commits = rc ? rc.contributions.totalCount : 0;
+          return r.stargazers_count * 2 + commits + (r.forks_count || 0);
+        };
+        return getScore(current) > getScore(prev) ? current : prev;
+      }, recentRepos[0]);
+      const risingScore =
+        risingStarRepo.stargazers_count * 2 +
+        (repoContributions.find((c) => c.repository.name === risingStarRepo.name)?.contributions
+          .totalCount || 0) +
+        (risingStarRepo.forks_count || 0);
+      if (risingScore > 0) {
+        hallOfFame.push({
+          category: 'growing',
+          title: 'Rising Star',
+          repoName: risingStarRepo.name,
+          repoAvatar: `https://github.com/${risingStarRepo.owner?.login || profileData.login}.png?size=64`,
+          description: 'Newest repository showing the fastest traction.',
+          centerpieceLabel: 'Impact Score',
+          centerpieceValue: risingScore,
+          bottomStats: `${risingStarRepo.stargazers_count} Stars • ${risingStarRepo.forks_count || 0} Forks`,
+          explanation: 'Your newest project gaining the most momentum.',
+          icon: '⚡',
+          url: `https://github.com/${risingStarRepo.owner?.login || profileData.login}/${risingStarRepo.name}`,
+        });
+      }
+    }
+
+    const ownedRepos = reposData.filter((r) => !r.fork && r.created_at && r.updated_at);
+    if (ownedRepos.length > 0) {
+      const mostConsistent = ownedRepos.reduce((prev, current) => {
+        const getAge = (r: GitHubRepo) => {
+          if (!r.created_at || !r.updated_at) return 0;
+          const ageDays = (Date.now() - new Date(r.created_at).getTime()) / (1000 * 60 * 60 * 24);
+          const daysSinceUpdate =
+            (Date.now() - new Date(r.updated_at).getTime()) / (1000 * 60 * 60 * 24);
+          const recencyFactor = daysSinceUpdate < 180 ? 1 : 0.3;
+          return ageDays * recencyFactor;
+        };
+        return getAge(current) > getAge(prev) ? current : prev;
+      }, ownedRepos[0]);
+      const consistencyScore = Math.round(
+        (Date.now() - new Date(mostConsistent.created_at!).getTime()) / (1000 * 60 * 60 * 24 * 30)
+      );
+      if (consistencyScore > 1) {
+        hallOfFame.push({
+          category: 'active',
+          title: 'Most Consistent',
+          repoName: mostConsistent.name,
+          repoAvatar: `https://github.com/${mostConsistent.owner?.login || profileData.login}.png?size=64`,
+          description: 'Longest sustained development effort.',
+          centerpieceLabel: 'Age (Months)',
+          centerpieceValue: consistencyScore,
+          bottomStats: `Still actively maintained`,
+          explanation: 'Your longest-running actively maintained project.',
+          icon: '🎯',
+          url: `https://github.com/${mostConsistent.owner?.login || profileData.login}/${mostConsistent.name}`,
+        });
+      }
+    }
+  }
+
+  if (repoContributions.length > 0) {
+    const mostContributed = repoContributions.reduce(
+      (prev, current) =>
+        current.contributions.totalCount > prev.contributions.totalCount ? current : prev,
+      repoContributions[0]
+    );
+    if (mostContributed && mostContributed.contributions.totalCount > 0) {
+      const repoNameStr =
+        mostContributed.repository.nameWithOwner || mostContributed.repository.name;
+      const ownerStr = mostContributed.repository.nameWithOwner
+        ? mostContributed.repository.nameWithOwner.split('/')[0]
+        : profileData.login;
+      hallOfFame.push({
+        category: 'contributed',
+        title: 'Most Contributed',
+        repoName: repoNameStr,
+        repoAvatar: `https://github.com/${ownerStr}.png?size=64`,
+        description: 'Highest contribution volume over the past year.',
+        centerpieceLabel: 'Contributions',
+        centerpieceValue: mostContributed.contributions.totalCount,
+        bottomStats: 'Over the past year',
+        explanation: 'The project you have committed to the most recently.',
+        icon: '🔥',
+        url: `https://github.com/${repoNameStr}`,
+      });
+    }
+  }
+
+  if (repoContributions.length > 0 && reposData.length > 0) {
+    const mostActive = reposData.reduce((prev, current) => {
+      const getScore = (r: GitHubRepo) => {
+        const rc = repoContributions.find((c) => c.repository.name === r.name);
+        const commits = rc ? rc.contributions.totalCount : 0;
+        const daysSinceUpdate = r.updated_at
+          ? Math.max(1, (Date.now() - new Date(r.updated_at).getTime()) / (1000 * 60 * 60 * 24))
+          : 100;
+        return commits + 30 / daysSinceUpdate;
+      };
+      return getScore(current) > getScore(prev) ? current : prev;
+    }, reposData[0]);
+
+    if (mostActive) {
+      const activeScore = Math.round(
+        (repoContributions.find((c) => c.repository.name === mostActive.name)?.contributions
+          .totalCount || 0) +
+          30 /
+            Math.max(
+              1,
+              (Date.now() - new Date(mostActive.updated_at || Date.now()).getTime()) /
+                (1000 * 60 * 60 * 24)
+            )
+      );
+      hallOfFame.push({
+        category: 'active',
+        title: 'Most Active',
+        repoName: mostActive.name,
+        repoAvatar: `https://github.com/${mostActive.owner?.login || profileData.login}.png?size=64`,
+        description: 'Highest overall recent activity.',
+        centerpieceLabel: 'Activity Score',
+        centerpieceValue: activeScore,
+        bottomStats: 'Recent commits & updates',
+        explanation: 'Your most actively maintained repository based on commits and updates.',
+        icon: '🏆',
+        url: `https://github.com/${mostActive.owner?.login || profileData.login}/${mostActive.name}`,
+      });
+    }
+  }
+
+  const seenTitles = new Set<string>();
+  const finalHallOfFame = hallOfFame
+    .filter((award) => {
+      const key = `${award.category}-${award.title}`;
+      if (seenTitles.has(key)) return false;
+      seenTitles.add(key);
+      return true;
+    })
+    .slice(0, 6);
 
   return {
-    profile,
+    profile: buildProfileData(profileData, totalStars, score),
     stats: {
       currentStreak: streakStats.currentStreak,
       peakStreak: streakStats.longestStreak,
       totalContributions: streakStats.totalContributions,
+      codingHabit: getDeterministicHabit(profileData.login),
+      totalPRs: calendarResult.status === 'fulfilled' ? (calendarResult.value.totalPRs ?? 0) : 0,
+      totalIssues:
+        calendarResult.status === 'fulfilled' ? (calendarResult.value.totalIssues ?? 0) : 0,
+      totalReviews:
+        calendarResult.status === 'fulfilled' ? (calendarResult.value.totalReviews ?? 0) : 0,
     },
     languages,
-    activity,
-    insights,
-    achievements,
+    activity: buildActivityMap(allDays),
+    insights: buildInsights(streakStats, languages),
+    achievements: generateAchievements(
+      streakStats.totalContributions,
+      streakStats.currentStreak,
+      weekendCommits,
+      Object.keys(langCounts).length,
+      streakStats.longestStreak
+    ),
     commitClock,
+    popularRepos,
+    pinnedRepos,
+    starredRepos,
+    deployments,
+    hallOfFame: finalHallOfFame,
+    graphData: { nodes, links },
+    lastSyncedAt: calendarData.lastSyncedAt,
   };
 }
 
 export async function getWrappedData(
   username: string,
-  year: string,
-  options?: FetchOptions
+  year?: string,
+  options?: FetchOptions,
+  timezone: string = 'UTC'
 ): Promise<import('../types/dashboard').WrappedStats> {
-  const from = `${year}-01-01T00:00:00Z`;
-  const to = `${year}-12-31T23:59:59Z`;
+  const trimmedYear = typeof year === 'string' ? year.trim() : '';
+  const fallbackYear = new Date().getFullYear().toString();
+  const normalizedYear = /^\d{4}$/.test(trimmedYear) ? trimmedYear : fallbackYear;
+
+  const from = convertLocalToUtc(parseInt(normalizedYear, 10), 1, 1, 0, 0, 0, timezone);
+  const to = convertLocalToUtc(parseInt(normalizedYear, 10), 12, 31, 23, 59, 59, timezone);
   const fetchOptions: FetchOptions = {
     from,
     to,
     bypassCache: options?.bypassCache ?? false,
     signal: options?.signal,
+    token: options?.token,
   };
 
-  const [calendar, repos] = await Promise.all([
+  const [userData, repos] = await Promise.all([
     fetchGitHubContributions(username, fetchOptions),
     fetchUserRepos(username, fetchOptions),
   ]);
-
+  const calendar = userData.calendar;
   const allDays = calendar.weeks.flatMap((w) => w.contributionDays);
-
   const totalContributions = calendar.totalContributions;
 
   const mostActiveDay = allDays.reduce(
@@ -909,11 +2537,14 @@ export async function getWrappedData(
     monthTotals[month] = (monthTotals[month] || 0) + day.contributionCount;
   }
   const busiestMonth =
-    Object.entries(monthTotals).sort((a, b) => b[1] - a[1])[0]?.[0] ?? `${year}-01`;
+    Object.entries(monthTotals).sort((a, b) => b[1] - a[1])[0]?.[0] ?? `${normalizedYear}-01`;
 
   const weekendDays = allDays.filter((d) => {
-    const dow = new Date(d.date).getUTCDay();
-    return dow === 0 || dow === 6;
+    const dowStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'short',
+    }).format(new Date(d.date + 'T12:00:00Z'));
+    return dowStr === 'Sat' || dowStr === 'Sun';
   });
   const weekendTotal = weekendDays.reduce((sum, d) => sum + d.contributionCount, 0);
   const weekendRatio =
@@ -932,5 +2563,128 @@ export async function getWrappedData(
     busiestMonth,
     weekendRatio,
     topLanguage,
+    calendar,
   };
+}
+
+export async function fetchCommitHourDistribution(
+  username: string,
+  token?: string
+): Promise<number[]> {
+  const hourCounts = new Array(24).fill(0);
+
+  // Fetch top repos by contribution count
+  const query = `
+    query($login: String!) {
+      user(login: $login) {
+        contributionsCollection {
+          commitContributionsByRepository(maxRepositories: 5) {
+            repository {
+              name
+              owner { login }
+            }
+            contributions {
+              totalCount
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  let topRepos: { owner: string; name: string }[] = [];
+  try {
+    const res = await fetchGraphQLWithRetry(
+      GITHUB_GRAPHQL_URL,
+      {
+        method: 'POST',
+        headers: getHeaders(token),
+        body: JSON.stringify({ query, variables: { login: username } }),
+        cache: 'no-store',
+      },
+      0,
+      undefined,
+      token
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const repos =
+        data?.data?.user?.contributionsCollection?.commitContributionsByRepository ?? [];
+      topRepos = repos.map((r: { repository: { owner: { login: string }; name: string } }) => ({
+        owner: r.repository.owner.login,
+        name: r.repository.name,
+      }));
+    }
+  } catch {
+    // silent — return empty distribution
+  }
+
+  if (topRepos.length === 0) return hourCounts;
+
+  const commitQuery = `
+    query($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) {
+        defaultBranchRef {
+          target {
+            ... on Commit {
+              history(first: 100) {
+                nodes {
+                  committedDate
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  await runCappedConcurrency(topRepos, 3, async ({ owner, name }) => {
+    try {
+      const res = await fetchGraphQLWithRetry(
+        GITHUB_GRAPHQL_URL,
+        {
+          method: 'POST',
+          headers: getHeaders(token),
+          body: JSON.stringify({ query: commitQuery, variables: { owner, name } }),
+          cache: 'no-store',
+        },
+        0,
+        undefined,
+        token
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      const nodes: { committedDate: string }[] =
+        data?.data?.repository?.defaultBranchRef?.target?.history?.nodes ?? [];
+      for (const node of nodes) {
+        const hour = new Date(node.committedDate).getUTCHours();
+        hourCounts[hour]++;
+      }
+    } catch {
+      // skip unavailable repos
+    }
+    return null;
+  });
+
+  return hourCounts;
+}
+
+export async function runCappedConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const limiter = pLimit(limit);
+  return Promise.all(
+    items.map((item) =>
+      limiter(async () => {
+        try {
+          return await fn(item);
+        } catch {
+          return null as unknown as R;
+        }
+      })
+    )
+  );
 }
