@@ -181,7 +181,7 @@ html {
 
   /* indigo glow, hover only */
 
-  /*user achievements tier color */
+  /* user achievements tier color */
   --tier-bronze-rgb: 161 98 7;
   --tier-silver-rgb: 107 114 128;
   --tier-gold-rgb: 202 138 4;
@@ -210,7 +210,7 @@ body {
   --recharts-tooltip-accent: #06b6d4;
   --chart-axis-color: #d4d4d8; /* maps to improved contrast in dark mode */
 
-  /*user achievements tier color */
+  /* user achievements tier color */
   --tier-bronze-rgb: 205 127 50;
   --tier-silver-rgb: 192 192 192;
   --tier-gold-rgb: 255 215 0;
