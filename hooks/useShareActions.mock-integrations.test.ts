@@ -4,7 +4,9 @@ import { useShareActions } from './useShareActions';
 
 // --- MOCK BROWSER DOM LIBRARIES ---
 // Prevent JSDOM Canvas crashes during image generation without using 'any'
-HTMLCanvasElement.prototype.getContext = vi.fn(() => ({} as CanvasRenderingContext2D | null)) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+HTMLCanvasElement.prototype.getContext = vi.fn(
+  () => ({}) as CanvasRenderingContext2D | null
+) as unknown as typeof HTMLCanvasElement.prototype.getContext;
 
 HTMLCanvasElement.prototype.toBlob = vi.fn((cb: (blob: Blob | null) => void) => {
   cb(new Blob(['fake'], { type: 'image/png' }));
@@ -65,7 +67,7 @@ interface MockExportData {
 
 describe('useShareActions Asynchronous Layer & Cache Mocking', () => {
   const mockUsername = 'test_user';
-  
+
   const mockExportData: MockExportData = {
     activity: [],
     streak: { current: 5, longest: 10 },
@@ -73,7 +75,7 @@ describe('useShareActions Asynchronous Layer & Cache Mocking', () => {
     stats: { currentStreak: 5, peakStreak: 10, totalContributions: 100 },
     languages: [],
   };
-  
+
   const mockOnClose = vi.fn();
 
   beforeEach(() => {
@@ -86,11 +88,11 @@ describe('useShareActions Asynchronous Layer & Cache Mocking', () => {
 
   it('1. mocks standard asynchronous imports and databases using stubs', async () => {
     const { result } = renderHook(() => useShareActions(mockUsername, mockExportData, mockOnClose));
-    
+
     await act(async () => {
       await result.current.handleCopyLink?.().catch(() => {});
     });
-    
+
     // Validates the component resolved successfully using the mocked DOM/Network environment
     expect(result.current).toBeDefined();
   });
@@ -116,11 +118,11 @@ describe('useShareActions Asynchronous Layer & Cache Mocking', () => {
     const { result } = renderHook(() => useShareActions(mockUsername, mockExportData, mockOnClose));
 
     // Trigger action twice to simulate initial fetch and subsequent cache hit
-    await act(async () => { 
-      await result.current.handleDownloadPNG?.().catch(() => {}); 
+    await act(async () => {
+      await result.current.handleDownloadPNG?.().catch(() => {});
     });
-    await act(async () => { 
-      await result.current.handleDownloadPNG?.().catch(() => {}); 
+    await act(async () => {
+      await result.current.handleDownloadPNG?.().catch(() => {});
     });
 
     // Verify the hook processes the cache hit internally without errors or crashes
