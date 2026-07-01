@@ -16,6 +16,20 @@ const ACCENT_PRESETS = [
   { hex: '#14b8a6', label: 'Teal' },
 ];
 
+export interface ReviewFormData {
+  name: string;
+  handle: string;
+  platform: 'twitter' | 'github';
+  message: string;
+  accentColor: string;
+}
+
+export interface ReviewFormProps {
+  initialPlatform?: 'twitter' | 'github';
+  onSuccess?: (data: ReviewFormData) => void;
+  optionalField?: string;
+}
+
 export default function SubmitReviewPage() {
   const [formData, setFormData] = useState({
     name: '',
