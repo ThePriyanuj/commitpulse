@@ -108,6 +108,16 @@ export class RateLimitError extends Error {
 // Global circuit state tracking
 let globalCircuitBreakerOpenUntil = 0;
 
+function isValidGitHubTokenFormat(token: string): boolean {
+  return (
+    token.length >= 36 &&
+    (token.startsWith('ghp_') ||
+      token.startsWith('ghu_') ||
+      token.startsWith('ghs_') ||
+      token.startsWith('ghr_') ||
+      token.startsWith('github_pat_'))
+  );
+}
 export function getGitHubTokens(): string[] {
   const envToken =
     process.env.GITHUB_TOKENS || process.env.GITHUB_PAT || process.env.GITHUB_TOKEN || '';
@@ -126,7 +136,8 @@ export function getGitHubTokens(): string[] {
         }
       }
       return token;
-    });
+    })
+    .filter((token) => isValidGitHubTokenFormat(token));
 }
 
 function isAbortError(error: unknown): boolean {
