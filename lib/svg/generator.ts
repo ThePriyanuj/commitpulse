@@ -902,6 +902,21 @@ export function generateSVG(
   if (params.autoTheme) return generateAutoThemeSVG(stats, params, calendar);
   if (params.compact) return generateCompactSVG(stats, params);
 
+  const rawBorderWidth = String(params.border || '').trim();
+  let safeBorderWidth: string | number = 0; // Default to 0 (no border) if invalid
+
+  if (/^\d+$/.test(rawBorderWidth)) {
+    safeBorderWidth = parseInt(rawBorderWidth, 10);
+  } else if (
+    /^#[0-9a-fA-F]{3,6}$/.test(rawBorderWidth) ||
+    /^[0-9a-fA-F]{3,6}$/.test(rawBorderWidth)
+  ) {
+    // If it's a valid hex code (with or without #), consider it a valid border and give it a default thickness
+    safeBorderWidth = 2;
+  } else if (['none', 'thin', 'medium', 'thick'].includes(rawBorderWidth.toLowerCase())) {
+    safeBorderWidth = rawBorderWidth.toLowerCase();
+  }
+
   const animate = params.animate ?? true;
   const safeUser = escapeXML(params.user || 'GitHub User');
   const bg = `#${sanitizeHexColor(params.bg, '0d1117')}`;
@@ -914,8 +929,8 @@ export function generateSVG(
 
   const text = `#${sanitizeHexColor(params.text, 'ffffff')}`;
 
-  const borderAttr = params.border
-    ? `stroke="#${sanitizeHexColor(params.border, '000000')}" stroke-width="2"`
+  const borderAttr = safeBorderWidth
+    ? `stroke="#${sanitizeHexColor(params.border, '000000')}" stroke-width="${safeBorderWidth}"`
     : '';
 
   const sanitizedFont = sanitizeFont(params.font);
@@ -982,6 +997,19 @@ export function generateSVG(
 
 function generateCompactSVG(stats: StreakStats, params: BadgeParams): string {
   const safeUser = escapeXML(params.user || 'GitHub User');
+
+  const rawBorderWidth = String(params.border || '').trim();
+  let safeBorderWidth: string | number = 0; // Default to 0 (no border) if invalid
+
+  if (/^\d+$/.test(rawBorderWidth)) {
+    safeBorderWidth = parseInt(rawBorderWidth, 10);
+  } else if (/^#[0-9a-fA-F]{3,6}$/.test(rawBorderWidth)) {
+    // If it's a valid hex color code, treat it as valid and give it a default thickness of 2
+    safeBorderWidth = 2;
+  } else if (['none', 'thin', 'medium', 'thick'].includes(rawBorderWidth.toLowerCase())) {
+    safeBorderWidth = rawBorderWidth.toLowerCase();
+  }
+
   const bg = `#${sanitizeHexColor(params.bg, '0d1117')}`;
   const text = `#${sanitizeHexColor(params.text, 'ffffff')}`;
 
@@ -990,7 +1018,10 @@ function generateCompactSVG(stats: StreakStats, params: BadgeParams): string {
     : params.accent;
   const accent = `#${sanitizeHexColor(accentRaw, '00ffaa')}`;
 
-  const borderAttr = params.border ? `stroke="#${params.border}" stroke-width="2"` : '';
+  const borderAttr = safeBorderWidth
+    ? `stroke="#${sanitizeHexColor(params.border, '000000')}" stroke-width="${safeBorderWidth}"`
+    : '';
+
   const radius = sanitizeRadius(params.radius, 12);
 
   const sanitizedFont = sanitizeFont(params.font);
@@ -1294,6 +1325,19 @@ export function generateWrappedSVG(
   calendar: ContributionCalendar
 ): string {
   const safeUser = escapeXML(params.user || 'GitHub User');
+
+  const rawBorderWidth = String(params.border || '').trim();
+  let safeBorderWidth: string | number = 0; // Default fallback width
+
+  if (/^\d+$/.test(rawBorderWidth)) {
+    safeBorderWidth = parseInt(rawBorderWidth, 10);
+  } else if (/^#[0-9a-fA-F]{3,6}$/.test(rawBorderWidth)) {
+    // If it's a valid hex color code, treat it as valid and give it a default thickness of 2
+    safeBorderWidth = 2;
+  } else if (['none', 'thin', 'medium', 'thick'].includes(rawBorderWidth.toLowerCase())) {
+    safeBorderWidth = rawBorderWidth.toLowerCase();
+  }
+
   const bg = `#${sanitizeHexColor(params.bg, '0d1117')}`;
   const bgFill =
     params.bgType === 'linear' || params.bgType === 'radial' ? 'url(#canvas-gradient)' : bg;
@@ -1393,9 +1437,9 @@ export function generateWrappedSVG(
         </g>`;
   }
 
-  const borderAttr = params.border
-    ? `stroke="#${sanitizeHexColor(params.border, '58a6ff')}" stroke-width="1.5"`
-    : `stroke="${accent}" stroke-opacity="0.15" stroke-width="1.5"`;
+  const borderAttr = safeBorderWidth
+    ? `stroke="#${sanitizeHexColor(params.border, '58a6ff')}" stroke-width="${safeBorderWidth}"`
+    : `stroke="${accent}" stroke-opacity="0.15" stroke-width="${safeBorderWidth || 1.5}"`;
 
   const autoThemeVariables = params.autoTheme
     ? `
@@ -1413,8 +1457,9 @@ export function generateWrappedSVG(
     : `fill="${params.hideBackground ? 'transparent' : bgFill}"`;
   const textClass = params.autoTheme ? 'class="cp-text-fill"' : `fill="${text}"`;
   const accentClass = params.autoTheme ? 'class="cp-accent-fill"' : `fill="${accent}"`;
+
   const borderStroke = params.autoTheme
-    ? 'class="cp-accent-stroke" stroke-opacity="0.15" stroke-width="1.5"'
+    ? `class="cp-accent-stroke" stroke-opacity="0.15" stroke-width="${safeBorderWidth || 1.5}"`
     : borderAttr;
 
   const safeId = safeUser.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
@@ -1784,6 +1829,19 @@ export function generateHeatmapSVG(
 
   const safeUser = escapeXML(params.user || 'GitHub User');
   const safeId = safeUser.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
+
+  const rawBorderWidth = String(params.border || '').trim();
+  let safeBorderWidth: string | number = 0; // Default fallback width
+
+  if (/^\d+$/.test(rawBorderWidth)) {
+    safeBorderWidth = parseInt(rawBorderWidth, 10);
+  } else if (/^#[0-9a-fA-F]{3,6}$/.test(rawBorderWidth)) {
+    // If it's a valid hex color code, treat it as valid and give it a default thickness of 2
+    safeBorderWidth = 2;
+  } else if (['none', 'thin', 'medium', 'thick'].includes(rawBorderWidth.toLowerCase())) {
+    safeBorderWidth = rawBorderWidth.toLowerCase();
+  }
+
   const bg = `#${sanitizeHexColor(params.bg, '0d1117')}`;
   const bgFill =
     params.bgType === 'linear' || params.bgType === 'radial' ? 'url(#canvas-gradient)' : bg;
@@ -1794,8 +1852,8 @@ export function generateHeatmapSVG(
   const accent = `#${sanitizeHexColor(rawAccent, '00ffaa')}`;
   const text = `#${sanitizeHexColor(params.text, 'ffffff')}`;
 
-  const borderAttr = params.border
-    ? `stroke="#${sanitizeHexColor(params.border, '000000')}" stroke-width="2"`
+  const borderAttr = safeBorderWidth
+    ? `stroke="#${sanitizeHexColor(params.border, '000000')}" stroke-width="${safeBorderWidth}"`
     : '';
 
   const sanitizedFont = sanitizeFont(params.font);
@@ -3336,6 +3394,19 @@ export function generateLanguagesSVG(
   repoContributions: RepoContribution[]
 ): string {
   const safeUser = escapeXML(params.user || 'GitHub User');
+
+  const rawBorderWidth = String(params.border || '').trim();
+  let safeBorderWidth: string | number = 0; // Default fallback width
+
+  if (/^\d+$/.test(rawBorderWidth)) {
+    safeBorderWidth = parseInt(rawBorderWidth, 10);
+  } else if (/^#[0-9a-fA-F]{3,6}$/.test(rawBorderWidth)) {
+    // If it's a valid hex color code, treat it as valid and give it a default thickness of 2
+    safeBorderWidth = 2;
+  } else if (['none', 'thin', 'medium', 'thick'].includes(rawBorderWidth.toLowerCase())) {
+    safeBorderWidth = rawBorderWidth.toLowerCase();
+  }
+
   const bg = `#${sanitizeHexColor(params.bg, '0d1117')}`;
 
   const accentRaw = Array.isArray(params.accent)
@@ -3345,8 +3416,9 @@ export function generateLanguagesSVG(
   const accent = `#${sanitizeHexColor(accentStr, '00ffaa')}`;
 
   const text = `#${sanitizeHexColor(params.text, 'ffffff')}`;
-  const borderAttr = params.border
-    ? `stroke="#${sanitizeHexColor(params.border, '000000')}" stroke-width="2"`
+
+  const borderAttr = safeBorderWidth
+    ? `stroke="#${sanitizeHexColor(params.border, '000000')}" stroke-width="${safeBorderWidth}"`
     : '';
 
   const sanitizedFont = sanitizeFont(params.font);
