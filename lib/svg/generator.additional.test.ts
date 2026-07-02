@@ -161,6 +161,18 @@ describe('[Refactor] renderGhostStyles — shared styles helper consistency', ()
       expect(rateLimitSvg).toContain(cls);
     });
   });
+
+  it('both functions retain ghost pulse and reduced-motion styles, and the not-found card keeps scan-line animation', () => {
+    const notFoundSvg = generateNotFoundSVG('octocat', '#0d1117', '#00ffaa', '#ffffff', 8);
+    const rateLimitSvg = generateRateLimitSVG('#0d1117', '#00ffaa', '#ffffff', 8, '8s');
+
+    ['.ghost-pulse', '@media (prefers-reduced-motion: reduce)'].forEach((style) => {
+      expect(notFoundSvg).toContain(style);
+      expect(rateLimitSvg).toContain(style);
+    });
+
+    expect(notFoundSvg).toContain('.scan-line');
+  });
 });
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────────

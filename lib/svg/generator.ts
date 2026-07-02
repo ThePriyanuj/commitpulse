@@ -2128,7 +2128,7 @@ export function renderGhostDefs(bg: string): string {
  * ensuring visual consistency across all error card variants.
  */
 function renderGhostStyles(): string {
-  return `<style>
+  return `
     @keyframes float {
       0% { transform: translateY(0px); }
       50% { transform: translateY(-10px); }
@@ -2137,7 +2137,7 @@ function renderGhostStyles(): string {
     .floating { animation: float 6s ease-in-out infinite; }
     .delay-1 { animation-delay: -2s; }
     .delay-2 { animation-delay: -4s; }
-  </style>`;
+  `;
 }
 
 export function generateNotFoundSVG(
@@ -2170,7 +2170,27 @@ export function generateNotFoundSVG(
     ${renderGhostDefs(bg)}
   </defs>
 
-  ${renderGhostStyles()}
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Syncopate:wght@400;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap');
+    .title { font-family: "Syncopate", sans-serif; fill: ${text}; font-size: 18px; letter-spacing: 6px; font-weight: 400; opacity: 0.5; }
+    .label { font-family: "Roboto", sans-serif; fill: ${accent}; font-size: 11px; letter-spacing: 2px; opacity: 0.4; }
+    .stats { font-family: "Space Grotesk", sans-serif; fill: ${text}; font-size: 42px; font-weight: 500; opacity: 0.2; }
+    .ghost-pulse { animation: gp 2.6s ease-in-out infinite; }
+    .scan-line { animation: scan-sweep var(--scan-speed, 8s) linear infinite; }
+    @keyframes gp {
+      0%, 100% { opacity: 0.55; }
+      50% { opacity: 1; }
+    }
+    @keyframes scan-sweep {
+      from { transform: translateY(0px); }
+      to { transform: translateY(240px); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .ghost-pulse { animation: none !important; transition: none !important; }
+      .scan-line { animation: none !important; transition: none !important; transform: translateY(0px) !important; }
+    }
+    ${renderGhostStyles()}
+  </style>
 
   <rect width="${SVG_WIDTH}" height="${SVG_HEIGHT}" rx="${radius}" fill="${bg}"/>
 
@@ -3221,7 +3241,21 @@ export function generateRateLimitSVG(
     ${renderGhostDefs(bg)}
   </defs>
 
-  ${renderGhostStyles()}
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Syncopate:wght@400;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap');
+    .title { font-family: "Syncopate", sans-serif; fill: ${text}; font-size: 18px; letter-spacing: 6px; font-weight: 400; opacity: 0.5; }
+    .label { font-family: "Roboto", sans-serif; fill: ${accent}; font-size: 11px; letter-spacing: 2px; opacity: 0.4; }
+    .stats { font-family: "Space Grotesk", sans-serif; fill: ${text}; font-size: 42px; font-weight: 500; opacity: 0.2; }
+    .ghost-pulse { animation: gp 2.6s ease-in-out infinite; }
+    @keyframes gp {
+      0%, 100% { opacity: 0.55; }
+      50% { opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .ghost-pulse { animation: none !important; transition: none !important; }
+    }
+    ${renderGhostStyles()}
+  </style>
 
   <rect width="${SVG_WIDTH}" height="${SVG_HEIGHT}" rx="${radius}" fill="${bg}"/>
 
