@@ -50,6 +50,8 @@ const FONT_MAP = {
   space: '"Space Grotesk", sans-serif',
 } as const;
 
+let currentBackgroundRectBorderAttrs = '';
+
 export function resolveFont(sanitizedFont?: string | null): string | null {
   if (!sanitizedFont) return null;
 
@@ -82,6 +84,26 @@ export function getUsernameFontSize(username: string): number {
   const len = username.length;
   if (len <= 12) return 18;
   return Math.max(10, 18 - (len - 12) * 0.5);
+}
+
+/**
+ * Renders the foundational background rectangle for all SVG cards.
+ * Maintains the 0.5px offset required for crisp SVG stroke rendering on standard DPI screens.
+ *
+ * @param bg - Background hex color string
+ * @param borderRadius - Card border radius in pixels
+ */
+function renderBackgroundRect(
+  bg: string,
+  borderRadius: number,
+  borderAttrsOverride?: string
+): string {
+  const borderAttrs = borderAttrsOverride
+    ? ` ${borderAttrsOverride}`
+    : currentBackgroundRectBorderAttrs
+      ? ` ${currentBackgroundRectBorderAttrs}`
+      : '';
+  return `<rect data-testid="card-bg" x="0.5" y="0.5" rx="${borderRadius}" width="100%" height="100%" fill="${bg}"${borderAttrs}/>`;
 }
 
 export function deterministicRandom(seed?: string | null): number {
@@ -938,16 +960,23 @@ export function generateSVG(
 
   const safeId = safeUser.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
 
-  return `
+  const previousBackgroundRectBorderAttrs = currentBackgroundRectBorderAttrs;
+  currentBackgroundRectBorderAttrs = borderAttr;
+
+  try {
+    return `
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" role="img" aria-labelledby="cp-title-${safeId}" aria-describedby="cp-desc-${safeId}">
   ${renderHeader(safeUser, stats, sf, params, safeId)}
   ${renderStyle(selectedFont, statsFont, googleFontsImport, text, mainAccentHex, sf, bg, params.entrance || 'rise')}
-  <rect width="${W}" height="${H}" rx="${radius}" fill="${params.hideBackground ? 'transparent' : bgFill}" ${borderAttr} />
+  ${renderBackgroundRect(params.hideBackground ? 'transparent' : bgFill, radius)}
   <g id="cp-towers" style="transform-origin: center; transform-box: fill-box;" transform="translate(0, ${Math.round((20 + yOffset) * sf)})">${towers}</g>
   ${renderIsometricLabels(calendar, params, text, sf)}
   ${renderFooter(stats, params, labels, safeUser, mainAccentHex, sf)}
   ${renderMilestoneBadges(stats, params, sf)}
 </svg>`;
+  } finally {
+    currentBackgroundRectBorderAttrs = previousBackgroundRectBorderAttrs;
+  }
 }
 
 function generateCompactSVG(stats: StreakStats, params: BadgeParams): string {
@@ -980,7 +1009,11 @@ function generateCompactSVG(stats: StreakStats, params: BadgeParams): string {
     params.isOfflineFallback ? ' [STALE CACHE]' : ''
   }`;
 
-  return `
+  const previousBackgroundRectBorderAttrs = currentBackgroundRectBorderAttrs;
+  currentBackgroundRectBorderAttrs = borderAttr;
+
+  try {
+    return `
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="none" role="img" aria-labelledby="cp-title-${safeId}" aria-describedby="cp-desc-${safeId}">
   <title id="cp-title-${safeId}">CommitPulse Compact Streak for ${safeUser}</title>
   <desc id="cp-desc-${safeId}">${safeUser} has a current streak of ${stats.currentStreak} days.</desc>
@@ -990,10 +1023,13 @@ function generateCompactSVG(stats: StreakStats, params: BadgeParams): string {
   .cp-compact-title { font-family: ${selectedFont || '"Syncopate", sans-serif'}; fill: ${text}; font-size: 15px; font-weight: 700; letter-spacing: 1px; opacity: 0.9; }
   .cp-compact-streak { font-family: ${statsFont}; fill: ${accent}; font-size: 20px; font-weight: 600; }
   </style>
-  <rect width="${width}" height="${height}" rx="${radius}" fill="${params.hideBackground ? 'transparent' : bg}" ${borderAttr} />
+  ${renderBackgroundRect(params.hideBackground ? 'transparent' : bg, radius)}
   <text x="20" y="42" class="cp-compact-title">${titleText}</text>
   <text x="20" y="70" class="cp-compact-streak">${'\u{1F525}'} ${stats.currentStreak}d streak</text>
 </svg>`;
+  } finally {
+    currentBackgroundRectBorderAttrs = previousBackgroundRectBorderAttrs;
+  }
 }
 
 function generateAutoThemeSVG(
@@ -1848,7 +1884,7 @@ export function generateHeatmapSVG(
   }
   </style>
 
-  <rect width="${W}" height="${H}" rx="${radius}" fill="${params.hideBackground ? 'transparent' : bgFill}" ${borderAttr} />
+  ${renderBackgroundRect(params.hideBackground ? 'transparent' : bgFill, radius)}
 
   ${!params.hide_title ? `<text x="${s(60)}" y="${s(30)}" class="hm-title">${truncateUsername(safeUser).toUpperCase()}${params.isOfflineFallback ? '<tspan fill="#ff9f43" font-size="10px" font-weight="bold"> [STALE CACHE]</tspan>' : ''}</text>` : ''}
 
@@ -2137,7 +2173,11 @@ export function generateNotFoundSVG(
 
   const safeId = safeName.replace(/[^a-zA-Z0-9-]/g, '_').toLowerCase();
 
-  return `<svg
+  const previousBackgroundRectBorderAttrs = currentBackgroundRectBorderAttrs;
+  currentBackgroundRectBorderAttrs = '';
+
+  try {
+    return `<svg
   xmlns="http://www.w3.org/2000/svg"
   width="100%"
   viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}"
@@ -2170,7 +2210,7 @@ export function generateNotFoundSVG(
     }
   </style>
 
-  <rect width="${SVG_WIDTH}" height="${SVG_HEIGHT}" rx="${radius}" fill="${bg}"/>
+  ${renderBackgroundRect(bg, radius, 'stroke="#e4e2e2" stroke-opacity="0.2"')}
 
   <g transform="translate(0, 20)" class="ghost-pulse">
     ${ghostTowersHtml}
@@ -2218,6 +2258,9 @@ export function generateNotFoundSVG(
     <text y="40" class="stats">—</text>
   </g>
 </svg>`;
+  } finally {
+    currentBackgroundRectBorderAttrs = previousBackgroundRectBorderAttrs;
+  }
 }
 
 export function generateVersusSVG(
@@ -3204,7 +3247,11 @@ export function generateRateLimitSVG(
     ? 'Circuit breaker active. System is temporarily offline.'
     : 'Please wait a moment before trying again';
 
-  return `<svg
+  const previousBackgroundRectBorderAttrs = currentBackgroundRectBorderAttrs;
+  currentBackgroundRectBorderAttrs = '';
+
+  try {
+    return `<svg
   xmlns="http://www.w3.org/2000/svg"
   width="100%"
   viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}"
@@ -3232,7 +3279,7 @@ export function generateRateLimitSVG(
      }
   </style>
 
-  <rect width="${SVG_WIDTH}" height="${SVG_HEIGHT}" rx="${radius}" fill="${bg}"/>
+  ${renderBackgroundRect(bg, radius, 'stroke="#e4e2e2" stroke-opacity="0.2"')}
 
   <g transform="translate(0, 20)" class="ghost-pulse">
     ${ghostTowersHtml}
@@ -3280,6 +3327,9 @@ export function generateRateLimitSVG(
     <text y="40" class="stats">—</text>
   </g>
 </svg>`;
+  } finally {
+    currentBackgroundRectBorderAttrs = previousBackgroundRectBorderAttrs;
+  }
 }
 
 export function generateLanguagesSVG(
