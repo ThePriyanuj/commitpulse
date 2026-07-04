@@ -27,8 +27,8 @@ vi.mock('framer-motion', () => ({
 // Typed error-boundary fixture used across every test in this suite.
 // The onError callback acts as a stand-in for a real telemetry tracker
 // (e.g. Sentry, Datadog, or a custom logging endpoint) so we can assert
-// that exceptions are forwarded to the observability layer without actually
-// wiring up a live SDK.
+// that exceptions are forwarded to the observability layer without wiring
+// up a live SDK.
 // ---------------------------------------------------------------------------
 interface BoundaryState {
   caught: boolean;
@@ -53,7 +53,7 @@ class TestErrorBoundary extends Component<BoundaryProps, BoundaryState> {
   componentDidCatch(error: Error): void {
     // Forward the exception to any registered telemetry tracker. In
     // production this would be replaced by Sentry.captureException() or an
-    // equivalent call.
+    // equivalent SDK call.
     this.props.onError?.(error);
   }
 
@@ -63,9 +63,7 @@ class TestErrorBoundary extends Component<BoundaryProps, BoundaryState> {
         <div role="alert" data-testid="error-recovery-panel">
           <h2>Something went wrong.</h2>
           <p>The review analytics panel failed to load.</p>
-          <button
-            onClick={() => this.setState({ caught: false, error: null })}
-          >
+          <button onClick={() => this.setState({ caught: false, error: null })}>
             Reload Panel
           </button>
         </div>
@@ -77,7 +75,7 @@ class TestErrorBoundary extends Component<BoundaryProps, BoundaryState> {
 
 // ---------------------------------------------------------------------------
 // Shared valid data fixture — satisfies PRInsightData so TypeScript is
-// happy but individual tests may override specific fields to inject faults.
+// happy, but individual tests may override specific fields to inject faults.
 // ---------------------------------------------------------------------------
 const baseData: PRInsightData = {
   totalPRs: 40,
@@ -102,7 +100,7 @@ const baseData: PRInsightData = {
 
 // ---------------------------------------------------------------------------
 // Suppress React's own console.error noise for intentional-crash tests so
-// the Vitest output stays readable.  Restore after each test to prevent
+// the Vitest output stays readable. Restore after each test to prevent
 // cross-test leakage.
 // ---------------------------------------------------------------------------
 let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -119,19 +117,15 @@ afterEach(() => {
 // Test Suite
 // ---------------------------------------------------------------------------
 describe('ReviewAnalytics — Hydration Stability, Exception Safety & Error Fallbacks', () => {
-  // -------------------------------------------------------------------------
   // Test 1: Mock nested child properties to throw unexpected runtime
   // exceptions or database-connectivity errors.
   //
-  // Why: When a background service returns a corrupted payload (e.g. NaN
-  // instead of a number, or null where an object is expected), the component
-  // must not propagate a JS exception to the React root. Wrapping it in a
-  // boundary proves the fault stays localised.
-  // -------------------------------------------------------------------------
-  it('Test 1: boundary catches a runtime exception caused by a corrupted data payload and prevents full-page crash', () => {
-    // Simulate a downstream service returning a null where .toFixed() would
-    // be called — this triggers a TypeError that mimics a real DB or API
-    // failure surfacing an unexpected shape.
+  // Why: When a background service returns a corrupted payload (e.g. null
+  // where .toFixed() is called), the component must not propagate the JS
+  // exception to the React root. The boundary proves the fault is localised.
+  it('Test 1: boundary catches exception from corrupted payload and prevents a page crash', () => {
+    // Simulate a downstream service returning null where .toFixed() is called
+    // — triggers a TypeError that mimics a real DB or API failure.
     const corruptedData = {
       ...baseData,
       fastestReview: null as unknown as number,
@@ -155,16 +149,13 @@ describe('ReviewAnalytics — Hydration Stability, Exception Safety & Error Fall
     expect(telemetry.mock.calls[0][0]).toBeInstanceOf(Error);
   });
 
-  // -------------------------------------------------------------------------
   // Test 2: Encase execution calls in localized boundary elements.
   //
   // Why: An error boundary must absorb failures without letting them bubble
-  // past its render scope. This test verifies that the boundary itself mounts
-  // cleanly when the component renders without fault, proving the wrapper is
-  // transparent under normal operating conditions.
-  // -------------------------------------------------------------------------
+  // past its render scope. This test verifies the boundary is transparent
+  // (invisible) under normal operating conditions so it does not break
+  // valid renders.
   it('Test 2: boundary element is transparent when the component renders without fault', () => {
-    // Normal, well-formed data — no exception should be thrown.
     render(
       <TestErrorBoundary>
         <ReviewAnalytics data={baseData} />
@@ -177,24 +168,20 @@ describe('ReviewAnalytics — Hydration Stability, Exception Safety & Error Fall
     expect(screen.getByText('Fastest Review')).toBeInTheDocument();
     expect(screen.getByText('Slowest Review')).toBeInTheDocument();
 
-    // The fallback UI must NOT be shown.
+    // The fallback UI must NOT be shown when there is no error.
     expect(screen.queryByTestId('error-recovery-panel')).toBeNull();
   });
 
-  // -------------------------------------------------------------------------
   // Test 3: Assert that target modules render a clean error recovery UI
   // instead of crashing the site.
   //
-  // Why: A BrokenChild component that throws unconditionally simulates the
-  // worst-case scenario: an unhandled exception from a nested dependency
-  // (e.g. a chart library calling a method that does not exist on a stub).
-  // The boundary must swap in a styled fallback so end users see a recovery
-  // panel rather than a React error overlay.
-  // -------------------------------------------------------------------------
-  it('Test 3: renders a clean error recovery UI with role="alert" when an inner child throws an unhandled exception', () => {
-    // A minimal component that always throws — models a dependency that
-    // explodes when the external service connection is lost.
-    const BrokenReviewChild = (): never => {
+  // Why: A component that always throws simulates the worst-case scenario:
+  // an unhandled exception from a nested dependency (e.g. a chart library
+  // calling a method that does not exist on a stub). The boundary must swap
+  // in a styled fallback so end users see a recovery panel, not a white page.
+  it('Test 3: renders a clean error recovery UI with role="alert" when a child throws', () => {
+    // Models a dependency that explodes when an external service is lost.
+    const BrokenReviewChild = () => {
       throw new Error('503 Service Unavailable — review analytics unreachable');
     };
 
@@ -213,21 +200,18 @@ describe('ReviewAnalytics — Hydration Stability, Exception Safety & Error Fall
     expect(screen.getByText('The review analytics panel failed to load.')).toBeInTheDocument();
   });
 
-  // -------------------------------------------------------------------------
   // Test 4: Verify exceptions are logged to dev-telemetry trackers
   // appropriately.
   //
   // Why: Silent failures are worse than visible ones. Every exception that
   // reaches the boundary must be forwarded to the telemetry layer so on-call
-  // engineers can diagnose production anomalies without needing a user
-  // report.  The test spies on the onError callback and validates the
-  // exception message is faithfully propagated.
-  // -------------------------------------------------------------------------
-  it('Test 4: exceptions are forwarded to the telemetry callback with the correct error message', () => {
+  // engineers can diagnose production anomalies without waiting for a user
+  // report. The test spies on onError and validates exact error propagation.
+  it('Test 4: exceptions are forwarded to the telemetry callback with the correct message', () => {
     const telemetry = vi.fn();
     const DB_ERROR_MSG = 'MongoDB connection pool exhausted';
 
-    const DatabaseFailureChild = (): never => {
+    const DatabaseFailureChild = () => {
       throw new Error(DB_ERROR_MSG);
     };
 
@@ -247,18 +231,14 @@ describe('ReviewAnalytics — Hydration Stability, Exception Safety & Error Fall
     expect(receivedError.message).toBe(DB_ERROR_MSG);
   });
 
-  // -------------------------------------------------------------------------
-  // Test 5: Ensure user reset/reload paths are available on the recovery
-  // panels.
+  // Test 5: Ensure user reset/reload paths are available on recovery panels.
   //
-  // Why: Presenting an error state with no escape route is a dead end for
-  // users. The recovery panel must always expose a "Reload Panel" button so
-  // users can attempt to recover without a full page refresh. This also
-  // prevents the support burden of users force-reloading the entire
-  // dashboard when only one widget fails.
-  // -------------------------------------------------------------------------
-  it('Test 5: the recovery panel exposes a reload button that is reachable by assistive technologies', () => {
-    const AlwaysBroken = (): never => {
+  // Why: An error state with no escape route is a dead end for users. The
+  // recovery panel must always expose a "Reload Panel" button so users can
+  // attempt recovery without a full page refresh, reducing the support
+  // burden of users hard-reloading the entire dashboard for a single widget.
+  it('Test 5: recovery panel exposes a reload button reachable by assistive technologies', () => {
+    const AlwaysBroken = () => {
       throw new Error('Simulated background service interruption');
     };
 
@@ -271,9 +251,9 @@ describe('ReviewAnalytics — Hydration Stability, Exception Safety & Error Fall
     // The recovery panel must be in the DOM.
     expect(screen.getByTestId('error-recovery-panel')).toBeInTheDocument();
 
-    // A clearly labelled reset button must be discoverable via accessible
-    // role query — not just by class name or data-testid — so keyboard and
-    // screen-reader users can invoke it.
+    // The button must be discoverable via accessible role query — not just by
+    // class name or data-testid — so keyboard and screen-reader users can
+    // invoke it without needing a pointing device.
     const reloadBtn = screen.getByRole('button', { name: /reload panel/i });
     expect(reloadBtn).toBeInTheDocument();
   });
