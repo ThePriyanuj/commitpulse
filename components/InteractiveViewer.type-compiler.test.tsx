@@ -8,8 +8,8 @@ const interactiveViewerSchema = z.object({
   children: z.custom<ReactNode>(),
   className: z.string().optional(),
   is3DMode: z.boolean().optional(),
-  onRotate3D: z.custom<(dx: number, dy: number) => void>().optional(),
-  onReset3D: z.custom<() => void>().optional(),
+  onRotate3D: z.function().optional(),
+  onReset3D: z.function().optional(),
 });
 
 type InteractiveViewerProps = React.ComponentProps<typeof InteractiveViewer>;
@@ -40,10 +40,10 @@ describe('InteractiveViewer TypeScript Compiler Validation & Schema Constraints 
     // @ts-expect-error - 'is3DMode' should be boolean, not string
     const invalidProps1: InteractiveViewerProps = { children: <div />, is3DMode: 'true' };
 
-    // @ts-expect-error - 'onRotate3D' expects a function, not a string
     const invalidProps2: InteractiveViewerProps = {
       children: <div />,
-      onRotate3D: 'this-is-not-a-function',
+      // @ts-expect-error - 'onRotate3D' expects (dx: number, dy: number) => void
+      onRotate3D: (x: string) => {},
     };
 
     // Validate they are structurally invalid but defined for test
