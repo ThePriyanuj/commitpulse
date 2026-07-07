@@ -2,13 +2,21 @@
 
 import crypto from 'crypto';
 import { NextResponse } from 'next/server';
-import { fetchGitHubContributions, getOrgDashboardData, getCircuitTelemetry } from '@/lib/github';
+import {
+  fetchGitHubContributions,
+  getOrgDashboardData,
+  getCircuitTelemetry,
+  fetchCommitHourDistribution,
+} from '@/lib/github';
 import {
   calculateStreak,
   calculateMonthlyStats,
   aggregateCalendars,
+  convertLocalToUtc,
   chunkDaysIntoWeeks,
   normalizeCalendarToTimezone,
+  isLeapYear,
+  daysInYear,
 } from '@/lib/calculate';
 import {
   generateNotFoundSVG,
@@ -25,6 +33,7 @@ import {
 import { generateConstellationSVG } from '@/lib/svg/constellation';
 import { generateRadarSVG } from '@/lib/svg/radar';
 import { generateDoughnutSVG } from '@/lib/svg/doughnut';
+import { generateCommitClockSVG } from '@/lib/svg/commitClock';
 import { optimizeSVG } from '@/lib/svg/optimizer';
 import { getSecondsUntilUTCMidnight, getSecondsUntilMidnightInTimezone } from '@/utils/time';
 import type { BadgeParams, RepoContribution, ExtendedContributionData } from '@/types';
@@ -37,23 +46,9 @@ import { refreshPolicy } from '@/services/github/refresh-policy';
 import { refreshRateLimiter } from '@/services/github/refresh-rate-limiter';
 import { logger } from '@/lib/logger';
 
-const VALIDATION_CACHE_MAX = 256;
-const validationCache = new Map<string, ReturnType<typeof streakParamsSchema.safeParse>>();
-
-function cachedValidation(
-  key: string,
-  parseFn: () => ReturnType<typeof streakParamsSchema.safeParse>
-) {
-  let cached = validationCache.get(key);
-  if (cached !== undefined) return cached;
-  cached = parseFn();
-  if (validationCache.size >= VALIDATION_CACHE_MAX) {
-    const firstKey = validationCache.keys().next().value;
-    if (firstKey !== undefined) validationCache.delete(firstKey);
-  }
-  validationCache.set(key, cached);
-  return cached;
-}
+import { validationCache as _vc, normalizeCacheKey, cachedValidation } from './validation-cache';
+// Re-alias so existing usages in this file continue to work.
+const validationCache = _vc;
 
 const SVG_CSP_HEADER =
   "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://fonts.gstatic.com;";
@@ -88,7 +83,7 @@ function getMonthlyReferenceDate(year: string | undefined, timezone: string): Da
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
 
-  const cacheKey = searchParams.toString();
+  const cacheKey = normalizeCacheKey(searchParams);
   const parseResult = cachedValidation(cacheKey, () =>
     streakParamsSchema.safeParse(coerceQueryParams(searchParams))
   );
@@ -129,6 +124,8 @@ export async function GET(request: Request) {
       year,
       from: customFrom,
       to: customTo,
+      start_date,
+      end_date,
       refresh,
       bypassCache: bypassCacheParam,
       hide_title,
@@ -177,8 +174,8 @@ export async function GET(request: Request) {
       | 'radar'
       | 'doughnut'
       | 'pie'
-      | 'activity_graph';
-
+      | 'activity_graph'
+      | 'commit_clock';
     const themeKey = getNormalizedThemeKey(theme);
     const themeName = themeKey === 'default' && theme ? theme : themeKey;
 
@@ -258,9 +255,28 @@ export async function GET(request: Request) {
       return date.toISOString();
     };
 
-    let from = parseDate(customFrom) ?? (year ? `${year}-01-01T00:00:00Z` : undefined);
+    const finalFrom = parseDate(start_date) ?? parseDate(customFrom);
+    const finalTo = parseDate(end_date) ?? parseDate(customTo);
 
-    let to = parseDate(customTo) ?? (year ? `${year}-12-31T23:59:59Z` : undefined);
+    let from = finalFrom ?? (year ? `${year}-01-01T00:00:00Z` : undefined);
+    let to = finalTo ?? (year ? `${year}-12-31T23:59:59Z` : undefined);
+
+    let autoSubtitle = custom_subtitle;
+    if (!autoSubtitle && (start_date || end_date)) {
+      const formatOpts: Intl.DateTimeFormatOptions = {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        timeZone: timezone,
+      };
+      const startStr = start_date
+        ? new Intl.DateTimeFormat('en-US', formatOpts).format(new Date(start_date))
+        : 'Start';
+      const endStr = end_date
+        ? new Intl.DateTimeFormat('en-US', formatOpts).format(new Date(end_date))
+        : 'Present';
+      autoSubtitle = `${startStr} - ${endStr}`;
+    }
 
     if (normalizedView === 'monthly') {
       const referenceDate = getMonthlyReferenceDate(year, timezone) || new Date();
@@ -342,7 +358,7 @@ export async function GET(request: Request) {
       autoTheme: isAutoTheme,
       hide_title,
       custom_title,
-      custom_subtitle,
+      custom_subtitle: autoSubtitle,
       hideBackground: hide_background,
       hide_stats,
       lang,
@@ -478,15 +494,24 @@ export async function GET(request: Request) {
       clearTimeout(timeoutId);
     }
 
-    if (days && normalizedView !== 'monthly') {
-      const allDays = calendar.weeks.flatMap((w) => w.contributionDays);
+    if (normalizedView !== 'monthly') {
+      let effectiveDays = days;
 
-      const filteredDays = allDays.slice(-days);
+      if (!effectiveDays && year) {
+        const yearNum = parseInt(year, 10);
+        if (!isNaN(yearNum)) {
+          effectiveDays = daysInYear(yearNum);
+        }
+      }
 
-      calendar = {
-        totalContributions: filteredDays.reduce((sum, d) => sum + d.contributionCount, 0),
-        weeks: chunkDaysIntoWeeks(filteredDays),
-      };
+      if (effectiveDays) {
+        const allDays = calendar.weeks.flatMap((w) => w.contributionDays);
+        const filteredDays = allDays.slice(-effectiveDays);
+        calendar = {
+          totalContributions: filteredDays.reduce((sum, d) => sum + d.contributionCount, 0),
+          weeks: chunkDaysIntoWeeks(filteredDays),
+        };
+      }
     }
 
     // ─── JSON output mode ──────────────────────────────────────────────────
@@ -581,6 +606,10 @@ export async function GET(request: Request) {
     } else if (normalizedView === 'activity_graph') {
       const stats = calculateStreak(calendar, timezone, undefined, grace);
       svg = generateActivityGraphSVG(stats, params, calendar);
+    } else if (normalizedView === 'commit_clock') {
+      const stats = calculateStreak(calendar, timezone, undefined, grace);
+      const hourCounts = await fetchCommitHourDistribution(user).catch(() => new Array(24).fill(0));
+      svg = generateCommitClockSVG(hourCounts, stats, params);
     } else if (versus && versusCalendar) {
       // Normalize both calendars to the target timezone for accurate comparison
       const normalizedCalendar = normalizeCalendarToTimezone(calendar, timezone);
@@ -669,7 +698,23 @@ function sanitizeErrorMessage(message: string): string {
   if (message.includes('schema') || message.includes('Schema')) {
     return 'Invalid request parameters';
   }
-  return message;
+  // Preserve user-facing validation messages — these are intentional,
+  // safe error strings thrown by route-level validation and do not
+  // expose internal implementation details.
+  const lower = message.toLowerCase();
+  if (lower.includes('strictly for organizations')) {
+    return 'This endpoint is strictly for organizations.';
+  }
+  if (lower.includes('strictly accepts a maximum of 2')) {
+    return 'The streak comparison generator strictly accepts a maximum of 2 usernames.';
+  }
+  if (lower.includes('quota is low')) {
+    return 'API rate limit quota is low. Please try again later.';
+  }
+  // Issue #7263: Return a generic message for all other errors to
+  // prevent leaking internal implementation details (auth state, cache
+  // servers, token rotation info, etc.) to the client.
+  return 'Something went wrong. Please try again later.';
 }
 
 function buildErrorResponse(error: unknown, parseResult: ParseResult): NextResponse {
@@ -678,39 +723,43 @@ function buildErrorResponse(error: unknown, parseResult: ParseResult): NextRespo
 
   if (parseResult.success && parseResult.data.format === 'json') {
     const isNotFound =
-      message.toLowerCase().includes('not found') ||
-      message.toLowerCase().includes('could not resolve');
-    const isRateLimit = message.toLowerCase().includes('rate limit');
+      rawMessage.toLowerCase().includes('not found') ||
+      rawMessage.toLowerCase().includes('could not resolve');
+    const isRateLimit = rawMessage.toLowerCase().includes('rate limit');
     const isValidationError =
       (error instanceof Error && error.name === 'ValidationError') ||
-      message.toLowerCase().includes('invalid') ||
-      message.toLowerCase().includes('validation') ||
-      message.toLowerCase().includes('strictly for organizations');
+      rawMessage.toLowerCase().includes('invalid') ||
+      rawMessage.toLowerCase().includes('validation') ||
+      rawMessage.toLowerCase().includes('strictly for organizations');
 
     const status = isRateLimit ? 429 : isNotFound ? 404 : isValidationError ? 400 : 500;
+    const jsonErrorHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    };
+    if (isRateLimit) {
+      jsonErrorHeaders['Retry-After'] = '60';
+    }
     return NextResponse.json(
       { error: message },
       {
         status,
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-store',
-        },
+        headers: jsonErrorHeaders,
       }
     );
   }
 
   const isNotFound =
-    message.toLowerCase().includes('not found') ||
-    message.toLowerCase().includes('could not resolve');
-  const isRateLimit = message.toLowerCase().includes('rate limit');
+    rawMessage.toLowerCase().includes('not found') ||
+    rawMessage.toLowerCase().includes('could not resolve');
+  const isRateLimit = rawMessage.toLowerCase().includes('rate limit');
 
   // 2. Safely detect if the error was a validation/client error
   const isValidationError =
     (error instanceof Error && error.name === 'ValidationError') ||
-    message.toLowerCase().includes('invalid') ||
-    message.toLowerCase().includes('validation') ||
-    message.toLowerCase().includes('strictly for organizations');
+    rawMessage.toLowerCase().includes('invalid') ||
+    rawMessage.toLowerCase().includes('validation') ||
+    rawMessage.toLowerCase().includes('strictly for organizations');
 
   const errBg = `#${sanitizeHexColor(parseResult.success ? parseResult.data.bg : undefined, '0d1117')}`;
   const errAccentRaw =
@@ -735,6 +784,7 @@ function buildErrorResponse(error: unknown, parseResult: ParseResult): NextRespo
       'Content-Security-Policy': SVG_CSP_HEADER,
     };
 
+    headers['Retry-After'] = '60';
     if (isCircuitOpen) {
       headers['X-CommitPulse-Circuit-Status'] = 'Open';
       headers['X-CommitPulse-Circuit-Reset-In'] = String(telemetry.resetInMs);

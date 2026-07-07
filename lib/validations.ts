@@ -370,7 +370,7 @@ const baseStreakParamsSchema = z.object({
   size: z.enum(['small', 'medium', 'large']).catch('medium').default('medium'),
 
   // to fetch N days contributions
-  days: z.coerce.number().int().positive().max(365).optional(),
+  days: z.coerce.number().int().positive().max(366).optional(),
 
   // Silently fall back to '8s' for invalid format (matches old behavior)
   speed: z
@@ -390,17 +390,32 @@ const baseStreakParamsSchema = z.object({
   year: z
     .string()
     .optional()
-    .refine(
-      (val) => {
-        if (!val) return true;
-        const yearNum = parseInt(val, 10);
-        const currentYear = new Date().getUTCFullYear();
-        return /^\d{4}$/.test(val) && yearNum >= 2008 && yearNum <= currentYear;
-      },
-      {
-        message: 'GitHub was founded in 2008. Please provide a year of 2008 or later.',
+    .superRefine((val, ctx) => {
+      if (!val) return;
+      if (!/^\d{4}$/.test(val)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Invalid year parameter. Must be a 4-digit year (e.g., 2023).',
+        });
+        return;
       }
-    ),
+      const yearNum = parseInt(val, 10);
+      const currentYear = new Date().getUTCFullYear();
+      if (yearNum < 2008) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Year ${yearNum} is before GitHub was founded in 2008. Please provide a year of 2008 or later.`,
+        });
+        return;
+      }
+      if (yearNum > currentYear) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Year ${yearNum} is in the future. Please provide a year up to ${currentYear}.`,
+        });
+        return;
+      }
+    }),
   from: z
     .string()
     .optional()
@@ -421,6 +436,26 @@ const baseStreakParamsSchema = z.object({
       },
       { message: 'Invalid "to" date format. Use ISO 8601 (e.g. 2023-12-31).' }
     ),
+  start_date: z
+    .string()
+    .optional()
+    .refine(
+      (val) => {
+        if (!val) return true;
+        return validateStrictISODate(val);
+      },
+      { message: 'Invalid "start_date" format. Use ISO 8601 (e.g. 2023-01-01).' }
+    ),
+  end_date: z
+    .string()
+    .optional()
+    .refine(
+      (val) => {
+        if (!val) return true;
+        return validateStrictISODate(val);
+      },
+      { message: 'Invalid "end_date" format. Use ISO 8601 (e.g. 2023-12-31).' }
+    ),
   date: z
     .string()
     .optional()
@@ -434,8 +469,14 @@ const baseStreakParamsSchema = z.object({
   refresh: z.string().optional().transform(toRefreshFlag),
   bypassCache: z.string().optional().transform(toRefreshFlag),
   hide_title: z.string().optional().transform(toBooleanFlag),
-  custom_title: z.string().optional(),
-  custom_subtitle: z.string().optional(),
+  custom_title: z
+    .string()
+    .max(200, { message: 'Title is too long (max 200 characters)' })
+    .optional(),
+  custom_subtitle: z
+    .string()
+    .max(200, { message: 'Subtitle is too long (max 200 characters)' })
+    .optional(),
   hide_background: z.string().optional().transform(toBooleanFlag),
   hide_stats: z.string().optional().transform(toBooleanFlag),
   lang: z.enum(supportedLanguages).catch('en').default('en'),
@@ -453,6 +494,8 @@ const baseStreakParamsSchema = z.object({
       'radar',
       'doughnut',
       'pie',
+      'activity_graph',
+      'commit_clock',
       'activity_graph',
     ])
     .catch('default')
@@ -749,17 +792,32 @@ export const wrappedParamsSchema = z.object({
   year: z
     .string()
     .optional()
-    .refine(
-      (val) => {
-        if (!val) return true;
-        const yearNum = parseInt(val, 10);
-        const currentYear = new Date().getUTCFullYear();
-        return /^\d{4}$/.test(val) && yearNum >= 2008 && yearNum <= currentYear;
-      },
-      {
-        message: 'GitHub was founded in 2008. Please provide a year of 2008 or later.',
+    .superRefine((val, ctx) => {
+      if (!val) return;
+      if (!/^\d{4}$/.test(val)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Invalid year parameter. Must be a 4-digit year (e.g., 2023).',
+        });
+        return;
       }
-    ),
+      const yearNum = parseInt(val, 10);
+      const currentYear = new Date().getUTCFullYear();
+      if (yearNum < 2008) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Year ${yearNum} is before GitHub was founded in 2008. Please provide a year of 2008 or later.`,
+        });
+        return;
+      }
+      if (yearNum > currentYear) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Year ${yearNum} is in the future. Please provide a year up to ${currentYear}.`,
+        });
+        return;
+      }
+    }),
   theme: z.string().optional().transform(toValidTheme).default('dark'),
   bg: z
     .string()

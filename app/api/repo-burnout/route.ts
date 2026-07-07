@@ -7,6 +7,7 @@ import { getClientIp } from '@/utils/getClientIp';
 import { getUserGitHubToken } from '@/lib/githubtoken';
 
 import { refreshPolicy } from '@/services/github/refresh-policy';
+import { getRateLimitHeaders } from '@/lib/rate-limit';
 import { refreshRateLimiter } from '@/services/github/refresh-rate-limiter';
 
 function toRefreshFlag(val?: string): boolean {
@@ -57,7 +58,7 @@ export async function GET(request: Request) {
     console.warn(`[Quota Low] Blocked manual refresh from IP ${ip} for ${owner}/${repo}`);
     return NextResponse.json(
       { error: 'GitHub API quota is low. Cache refresh temporarily disabled.' },
-      { status: 429 }
+      { status: 429, headers: { 'Retry-After': '60' } }
     );
   }
 
@@ -71,11 +72,7 @@ export async function GET(request: Request) {
         { error: 'Refresh rate limit exceeded. Please try again later.' },
         {
           status: 429,
-          headers: {
-            'X-RateLimit-Limit': rateLimitCheck.limit.toString(),
-            'X-RateLimit-Remaining': rateLimitCheck.remaining.toString(),
-            'X-RateLimit-Reset': rateLimitCheck.reset.toString(),
-          },
+          headers: getRateLimitHeaders(rateLimitCheck),
         }
       );
     }
@@ -94,7 +91,7 @@ export async function GET(request: Request) {
   try {
     const userToken = await getUserGitHubToken();
     const data = await fetchBurnoutAnalysis(owner, repo, {
-      bypassCache: refresh,
+      bypassCache: shouldBypassCache,
       token: userToken,
     });
 
@@ -115,6 +112,9 @@ export async function GET(request: Request) {
     const message = error instanceof Error ? error.message : 'Internal Server Error';
     const status = message.includes('not found') ? 404 : 500;
 
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json(
+      { error: status === 404 ? 'Repository not found' : 'Internal server error' },
+      { status }
+    );
   }
 }
