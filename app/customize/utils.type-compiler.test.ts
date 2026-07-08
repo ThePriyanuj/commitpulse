@@ -28,7 +28,16 @@ it('should allow valid union type values without compile errors', () => {
 
   expectTypeOf<CustomizeOptions['badgeHeight']>().toEqualTypeOf<number | ''>();
 
-  expectTypeOf<CustomizeOptions['timezone']>().toEqualTypeOf<CustomizeOptions['timezone']>();
+  expectTypeOf<CustomizeOptions['timezone']>().toEqualTypeOf<
+    | 'UTC'
+    | 'America/New_York'
+    | 'America/Los_Angeles'
+    | 'Europe/London'
+    | 'Europe/Berlin'
+    | 'Asia/Kolkata'
+    | 'Asia/Tokyo'
+    | 'Australia/Sydney'
+  >();
 });
 
 it('should build query parameters correctly for valid customization options', () => {
