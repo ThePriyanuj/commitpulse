@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { ControlsPanel } from './ControlsPanel';
 import type { BadgeSize, Font, Scale } from '../types';
+import React from 'react';
 
 // --------------------
 // Translation Mock
