@@ -23,7 +23,7 @@ describe('DashboardLayout - Timezone Boundaries', () => {
 
     for (const tz of timezones) {
       mockTimezone(tz);
-      
+
       const { unmount } = render(
         <DashboardLayout>
           <div>Timezone Content: {tz}</div>
@@ -32,7 +32,7 @@ describe('DashboardLayout - Timezone Boundaries', () => {
 
       expect(screen.getByText(`Timezone Content: ${tz}`)).toBeInTheDocument();
       expect(screen.getByRole('main')).toHaveClass('max-w-[1600px]', 'mx-auto', 'min-h-screen');
-      
+
       unmount();
       restoreTimezone();
     }
@@ -40,7 +40,7 @@ describe('DashboardLayout - Timezone Boundaries', () => {
 
   it('handles leap year boundaries correctly', () => {
     vi.setSystemTime(new Date('2024-02-29T12:00:00Z'));
-    
+
     render(
       <DashboardLayout>
         <div>Leap Year Content</div>
