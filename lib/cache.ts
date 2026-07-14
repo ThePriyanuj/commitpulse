@@ -146,7 +146,7 @@ export class TTLCache<T> {
    * @example
    * const user = cache.get("user:1");
    */
-  get(key: string): V | null {
+  get(key: string): T | null {
     if (typeof key !== 'string' || key.trim().length === 0)
       throw new TypeError('Cache key must be a non-empty, non-whitespace string.');
 
