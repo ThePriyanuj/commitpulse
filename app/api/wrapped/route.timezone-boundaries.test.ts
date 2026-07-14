@@ -1,15 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GET } from './route';
 
-vi.mock('../../../lib/github', () => ({
+vi.mock('@/lib/github', () => ({
   getWrappedData: vi.fn(),
 
   getCircuitTelemetry: vi.fn().mockReturnValue({ isOpen: false, resetInMs: 0 }),
 }));
 
-import { getWrappedData, getCircuitTelemetry } from '../../../lib/github';
-import type { ContributionCalendar } from '../../../types';
-import type { WrappedStats } from '../../../types/dashboard';
+import { getWrappedData, getCircuitTelemetry } from '@/lib/github';
 import { refreshPolicy } from '../../../services/github/refresh-policy';
 import { refreshRateLimiter } from '../../../services/github/refresh-rate-limiter';
 import { quotaMonitor } from '../../../services/github/quota-monitor';
