@@ -260,9 +260,13 @@ export class TTLCache<T> {
     if (typeof key !== 'string' || key.trim().length === 0) {
       throw new TypeError('Cache key cannot be empty');
     }
+    if (!Number.isFinite(ttlMs)) {
+      throw new RangeError(`ttlMs must be a finite number, got ${ttlMs}`);
+    }
 
-    if (ttlMs <= 0) throw new RangeError(`ttlMs must be positive, got ${ttlMs}`);
-    if (Number.isNaN(ttlMs)) ttlMs = 60_000;
+    if (ttlMs <= 0) {
+      throw new RangeError(`ttlMs must be positive, got ${ttlMs}`);
+    }
 
     if (key.length > 10000) {
       throw new Error('Cache key exceeds maximum allowed length to prevent memory bloat');
