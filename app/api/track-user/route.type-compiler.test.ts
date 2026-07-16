@@ -1,6 +1,7 @@
 import { describe, expect, it, expectTypeOf } from 'vitest';
 import type { NextResponse } from 'next/server';
 import * as route from './route';
+import react from 'react';
 
 describe('track-user route TypeScript Compiler Validation', () => {
   it('exports POST handler', () => {
