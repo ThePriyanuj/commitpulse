@@ -41,11 +41,14 @@ class ServiceLayer {
     private cache: MockLocalCache
   ) {}
 
-  async getUserDetails(username: string, options?: { timeoutMs?: number }) {
+  async getUserDetails(
+    username: string,
+    options?: { timeoutMs?: number }
+  ): Promise<{ login: string; name: string; public_repos: number }> {
     // Assert local cache layers are queried before triggering database retrievals
     const cached = this.cache.get(username);
     if (cached) {
-      return cached;
+      return cached as { login: string; name: string; public_repos: number };
     }
 
     if (options?.timeoutMs && options.timeoutMs > 0) {
