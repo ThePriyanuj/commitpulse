@@ -89,7 +89,7 @@ describe('ApiStreakRoute Timezone Normalization & Calendar Boundary Alignment', 
     expect(getSecondsUntilMidnightInTimezone).toHaveBeenCalled();
     expect(getSecondsUntilUTCMidnight).not.toHaveBeenCalled();
 
-    expect(response.headers.get('Cache-Control')).toContain('s-maxage=1');
+    expect(response.headers.get('Cache-Control')).toContain('s-maxage=7200');
   });
 
   it('returns 400 for an invalid timezone and skips GitHub fetching', async () => {
