@@ -85,6 +85,11 @@ export function shouldFallbackOnError(err: unknown): boolean {
  * A value like "abc" or "-5" would otherwise produce a NaN or negative
  * timeout and break AbortSignal scheduling at request time.
  */
+
+function maskToken(str: string): string {
+  return str.replace(/ghp_[a-zA-Z0-9]+/g, 'ghp_***MASKED***');
+}
+
 function positiveIntFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
@@ -293,7 +298,9 @@ export async function fetchWithRetry(
       if (isTimeoutAbort) {
         throw new Error(`GitHub API request timed out after ${resolvedTimeout / 1000}s`);
       }
-      throw fetchError;
+      const safeMessage = maskToken(JSON.stringify(fetchError));
+      console.error('GitHub API Error:', safeMessage);
+      throw new Error('GitHub API request failed');
     }
     const delay = getJitteredBackoff(attempt);
     await new Promise((resolve) => setTimeout(resolve, delay));
@@ -402,7 +409,15 @@ export async function fetchWithRetry(
 
   // Only retry on 5xx — all other statuses are returned immediately
   const shouldRetry = res.status >= 500;
-  if (!shouldRetry || attempt >= MAX_RETRIES) return res;
+  if (!shouldRetry || attempt >= MAX_RETRIES) {
+    if (res.status === 403) {
+      throw new Error('GitHub API rate limit exceeded. Try again later.');
+    }
+    if (res.status === 401) {
+      throw new Error('Invalid GitHub token configuration.');
+    }
+    return res;
+  }
 
   const delay = getJitteredBackoff(attempt);
   await new Promise((resolve) => setTimeout(resolve, delay));
