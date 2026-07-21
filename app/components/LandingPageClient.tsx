@@ -628,6 +628,9 @@ export default function LandingPageClient() {
                   </span>
                   <input
                     suppressHydrationWarning
+                    id="username"
+                    name="username"
+                    autoComplete="username"
                     type="text"
                     placeholder={t('landing.input_placeholder', {
                       defaultValue: 'Enter GitHub Username',
