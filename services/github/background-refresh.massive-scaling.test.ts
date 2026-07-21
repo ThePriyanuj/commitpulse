@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BackgroundRefresh } from './background-refresh';
 import { getFullDashboardData } from '../../lib/github';
+import react from 'react';
 
 vi.mock('../../lib/github', () => ({
   getFullDashboardData: vi.fn(),
